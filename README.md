@@ -46,6 +46,7 @@
 
 - 패키지 복원 및 실행
   - `dotnet run`
+  - 파일 입력 모드: `dotnet run -- --file test2.wav` 또는 `dotnet run -- -f test2.wav`
 - 서버/보안 설정
   - `ADDRESS`를 실제 gRPC 엔드포인트로 변경 (`http://` 또는 `https://`) (`Program.cs:19`)
   - 필요 시 인증/정책/테넌트 헤더 설정 (`Program.cs:25-28`)
@@ -70,4 +71,3 @@
 
 ***
 문의나 개선 요청(파일 입력 모드, 설정값 스위치, HTTPS 설정 등)이 있으면 이슈로 남겨 주세요.
-

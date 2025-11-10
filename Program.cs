@@ -12,6 +12,7 @@ using GrpcStatusCode = Grpc.Core.StatusCode;
 
 using NAudio.Wave;
 using NAudio.CoreAudioApi;
+using NAudio.Wave.SampleProviders;
 
 class Program
 {
@@ -41,10 +42,26 @@ class Program
     static volatile bool _initOk = false;
     static DateTime _lastResultAt = DateTime.UtcNow;
 
-    static async Task Main()
+    static async Task Main(string[]? args)
     {
         Console.WriteLine("[Info] 실시간 마이크 스트리밍 시작. (F=Final 강제, Enter=종료)");
         Console.WriteLine($"[Info] SAMPLE_RATE={TARGET_SR}Hz, CHUNK={CHUNK_BYTES} bytes");
+
+        // File input mode: --file <path> or -f <path>
+        string? filePath = null;
+        if (args != null)
+        {
+            for (int i = 0; i < args.Length; i++)
+            {
+                var a = args[i];
+                if (string.Equals(a, "--file", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(a, "-f", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 < args.Length) filePath = args[i + 1];
+                    break;
+                }
+            }
+        }
 
         using var channel = GrpcChannel.ForAddress(ADDRESS);
         var headers = new Metadata();
@@ -222,6 +239,56 @@ class Program
 
             Console.WriteLine($"[Tx] total={(sentBytes/1024.0):F1} KB");
         });
+
+        // If file input mode is specified, stream file -> queue, finalize, and return.
+        if (!string.IsNullOrWhiteSpace(filePath))
+        {
+            Console.WriteLine($"[File] input mode: {filePath}");
+            try
+            {
+                using var afr = new AudioFileReader(filePath);
+                ISampleProvider provider = afr; // 32-bit float samples
+                if (provider.WaveFormat.SampleRate != TARGET_SR)
+                    provider = new WdlResamplingSampleProvider(provider, TARGET_SR);
+                if (provider.WaveFormat.Channels == 2)
+                    provider = new StereoToMonoSampleProvider(provider) { LeftVolume = 0.5f, RightVolume = 0.5f };
+
+                var waveProvider = new SampleToWaveProvider16(provider); // mono 16-bit
+                var buf = new byte[CHUNK_BYTES];
+                int read;
+                while ((read = waveProvider.Read(buf, 0, buf.Length)) > 0)
+                {
+                    var outBuf = new byte[read];
+                    Buffer.BlockCopy(buf, 0, outBuf, 0, read);
+                    if (!queue.IsAddingCompleted)
+                    {
+                        try { queue.Add(outBuf); } catch { }
+                    }
+                }
+                Console.WriteLine("[File] enqueued all audio from file.");
+            }
+            finally
+            {
+                queue.CompleteAdding();
+            }
+
+            // Send End and complete request stream
+            await SendEndAsync(call, callId);
+            await call.RequestStream.CompleteAsync();
+            Console.WriteLine("[End] sent & request stream completed.");
+
+            // Stop watchdog and wait tasks
+            watchdogCts.Cancel();
+            try { await watchdogTask; } catch { }
+            await Task.WhenAll(senderTask, receiverTask);
+
+            var st2 = call.GetStatus();
+            Console.WriteLine($"[FinalStatus] {st2.StatusCode} - {st2.Detail}");
+            var tr2 = call.GetTrailers();
+            Console.WriteLine($"[Trailers] {tr2}");
+            Console.WriteLine("[Done]");
+            return;
+        }
 
         // ===== 입력 장치 열기: MME → 실패 시 WASAPI =====
         IDisposable? capture = null;
