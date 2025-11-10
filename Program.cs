@@ -430,9 +430,39 @@ class Program
             var t = resultMsg.GetType();
             isFinal = (bool?)t.GetProperty("Final")?.GetValue(resultMsg)
                    ?? (bool?)t.GetProperty("IsFinal")?.GetValue(resultMsg);
+            // Handle ResultType enum indicating FINAL (for rapeech.asr.v1.Result)
+            try
+            {
+                var rtProp = t.GetProperty("ResultType");
+                var rtVal = rtProp?.GetValue(resultMsg);
+                if (rtVal != null && rtVal.ToString()?.Equals("Final", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    isFinal = true;
+                }
+            } catch {}
             var directText = t.GetProperty("Text")?.GetValue(resultMsg)?.ToString()
                           ?? t.GetProperty("Transcript")?.GetValue(resultMsg)?.ToString();
             if (!string.IsNullOrWhiteSpace(directText)) return directText;
+        } catch {}
+
+        // rapeech Result: Hypotheses[0].Text
+        try
+        {
+            var t = resultMsg.GetType();
+            var hypsProp = t.GetProperty("Hypotheses");
+            if (hypsProp != null)
+            {
+                var hyps = hypsProp.GetValue(resultMsg) as System.Collections.IEnumerable;
+                if (hyps != null)
+                {
+                    foreach (var h in hyps)
+                    {
+                        var txt = h?.GetType().GetProperty("Text")?.GetValue(h)?.ToString();
+                        if (!string.IsNullOrWhiteSpace(txt)) return txt;
+                        break;
+                    }
+                }
+            }
         } catch {}
 
         try
