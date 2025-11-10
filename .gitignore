@@ -1,0 +1,35 @@
+# Build outputs
+bin/
+obj/
+
+# Visual Studio/VS Code
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Test/Logs
+TestResults/
+*.log
+
+# OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# NuGet
+*.nupkg
+.nuget/
+
+# Rider/Resharper
+.idea/
+_ReSharper*/
+*.DotSettings.user
+
+# Others
+*.swp
+*.tmp
+

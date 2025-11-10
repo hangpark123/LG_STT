@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package rapeech.asr.v1;
+
+option java_multiple_files = true;
+option java_package = "com.rapeech.rpc.asr.v1";
+option java_outer_classname = "ResultProto";
+
+/* 
+ * Output message containing the transcription result, including the result
+ * type, the start and end times, metadata about the transcription, and one
+ * or more transcription hypotheses. Included in
+ * [RecognitionResponse](#recognitionresponse).
+ */
+message Result {
+  ResultType result_type = 1;         // Whether final, partial, or immutable results are returned.
+  int32 abs_start_ms = 2;             // Audio stream start time.
+  int32 abs_end_ms = 3;               // Audio stream end time.
+  repeated Hypothesis hypotheses = 4; // Repeated. One or more transcription variations.
+}
+
+/* 
+ * Input and output field specifying how transcription results for each
+ * utterance are returned. See [Result type](#result-type) for examples. In a
+ * request [RecognitionParameters](#recognitionparameters), it specifies the
+ * desired result type. In a response [Result](#result), it indicates the
+ * actual result type that was returned. 
+ */
+enum ResultType {
+  FINAL = 0;              // Only the final version of each utterance is returned.
+  PARTIAL = 1;            // Variable partial results are returned, followed by a final result.
+  IMMUTABLE_PARTIAL = 2;  // Stabilized partial results are returned, followed by a final result.
+}
+
+/* 
+ * Output message containing one or more proposed transcriptions of the audio
+ * stream. Included in [Result](#result). Each variation has its own confidence
+ * level along with the text in two levels of formatting. See
+ * [Formatting](#formatting). 
+ */
+message Hypothesis {
+  oneof optional_hypothesis_confidence {
+    float confidence = 1;               // The confidence score for the entire transcription.
+  }
+  oneof optional_hypothesis_average_confidence {
+    float average_confidence = 2;       // The confidence score for the hypothesis. the average of all word confidence scores based on their duration. 
+  }
+  bool rejected = 3;                    // Whether the hypothesis was rejected.
+  string text = 4;                      // Text of the result.
+  repeated Word words = 5;              // Repeated. One or more recognized words in the result.
+}
+
+/* 
+ * Output message containing one or more recognized words in the hypothesis,
+ * including the text, confidence score, and timing information. Included in
+ * [Hypothesis](#hypothesis). 
+ */
+message Word {
+  string text = 1;                    // The recognized word.
+  oneof optional_word_confidence {
+    float confidence = 2;             // The confidence score of the recognized word.
+  }
+  uint32 start_ms = 3;                // Word start offset in the audio stream.
+  uint32 end_ms = 4;                  // Word end offset in the audio stream.
+}

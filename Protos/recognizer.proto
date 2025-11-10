@@ -1,0 +1,191 @@
+syntax = "proto3";
+
+package rapeech.asr.v1;
+
+import "rapeech/asr/v1/result.proto";
+
+option java_multiple_files = true;
+option java_package = "com.rapeech.rpc.asr.v1";
+option java_outer_classname = "RecognizerProto";
+
+/*
+ * Streaming recognition service API.  
+ */
+service Recognizer {
+  rpc Recognize (stream RecognitionRequest) returns (stream RecognitionResponse); // Starts a recognition request and returns a response.
+}
+
+/*
+ * Input stream messages that request recognition, sent one at a time in a
+ * specific order. The first mandatory field sends recognition parameters and
+ * resources, the final field sends audio to be recognized. Included in
+ * [Recognizer](#recognizer) - Recognize service.
+ */
+message RecognitionRequest {
+  oneof request_union {
+    RecognitionInitMessage recognition_init_message = 1; // Required first message in the RPC input stream, sends parameters and resources for recognition.
+    bytes audio = 2;                                     // Audio samples in the selected encoding for recognition.
+    RecognitionEndMessage recognition_end_message = 3;    // Final message to end the recognition session.
+  }
+}
+
+/*
+ * Input message that initiates a new recognition turn. Included in
+ * [RecognitionRequest](#recognitionrequest).
+ */
+message RecognitionInitMessage {
+  RecognitionParameters parameters = 1;   // Language, audio format, and other recognition parameters.
+  string call_id = 2;                     // Unique call-id.
+  ChannelType channel_type = 3;           // Audio channel type.
+  map<string, string> data = 4;           // Repeated. Optional client-supplied key,value pairs to inject into the call log.
+}
+
+/*
+ * Input message that defines parameters for the recognition process. Included
+ * in [RecognitionInitMessage](#recognitioninitmessage). The language parameter
+ * is required. All others are optional. See [Defaults](#defaults) for a list
+ * of default values. 
+ */
+message RecognitionParameters {
+  AudioFormat audio_format = 1;               // Mandatory. Audio codec type and sample rate.
+  RecognitionType recognition_type = 2;       // Operation type of recognition. Default REALTIME.
+  ResultType result_type = 3;                 // The level of transcription results. Default IMMUTABLE_PARTIAL.
+}
+
+/*
+ * Mandatory input message containing the audio format of the audio to transcribe.
+ * Included in [RecognitionParameters](#recognitionparameters).
+ */
+message AudioFormat {
+  oneof audio_format_union {
+    PCM pcm = 1;          // Signed 16-bit little endian PCM, 8kHz or 16kHz
+    ALaw alaw = 2;        // G.711 A-law, 8kHz
+    ULaw ulaw = 3;        // G.711 Mu-law, 8kHz
+    Opus opus = 4;        // RFC6716 Opus, 8kHz or 16kHz
+    OggOpus ogg_opus = 5; // RFC7845 Opus, 8kHz or 16kHz
+  }
+}
+
+/* 
+ * Input message defining PCM sample rate.  
+ */
+message PCM { 
+  uint32 sample_rate_hz = 1; // Audio sample rate: 0, 8000, 16000. Default 0, meaning 8000.
+}
+
+/* 
+ * Input message defining ALaw audio format. G.711 audio formats are set to 8kHz.
+ */
+message ALaw {}
+
+/* 
+ * Input message defining ULaw audio format. G.711 audio formats are set to 8kHz.
+ */
+message ULaw {}
+
+/*
+ * Input message defining Opus packet stream decoding parameters.
+ */
+message Opus {
+  uint32 decode_rate_hz = 1;  // Decoder output rate: 0, 8000, 16000. Default 0, meaning 8000.
+  uint32 preskip_samples = 2; // Decoder 48KHz output samples to skip.
+  uint32 source_rate_hz = 3;  // Optional: input source sample rate
+}
+
+/*
+ * Input message defining Ogg-encapsulated Opus audio stream parameters.
+ */
+message OggOpus {
+  uint32 decode_rate_hz = 1; // Decoder output rate: 0, 8000, 16000. Default 0, meaning 8000.
+}
+
+/*
+ * Input enum channel type.
+ */
+enum ChannelType {
+  UNDEFINED = 0; // Undefined channel.
+  RX = 1;        // Receive channel.
+  TX = 2;        // Transmit channel.
+}
+
+/*
+ * Input enum recognition type.
+ */
+ enum RecognitionType {
+  REALTIME = 0;     // Recognize in real time.
+  NEARREALTIME = 1; // Recognize in near real time.
+  BATCH = 2;        // Recognize as a batch job.
+}
+
+/*
+ * Input message that ends recognition turn. Included in
+ * [RecognitionRequest](#recognitionrequest).
+ */
+ message RecognitionEndMessage {
+  string call_id = 1;                     // Unique call-id.
+  map<string, string> data = 2;           // Repeated. Optional client-supplied key,value pairs to inject into the call log.
+}
+
+
+/*
+ * Output stream of messages in response to a recognize request. Included in
+ * [Recognizer](#recognizer) - Recognize service.
+ */
+message RecognitionResponse {
+  oneof response_union {
+    Status status = 1;                 // Always the first message returned, indicating whether recognition was initiated successfully.
+    Result result = 2;                 // The partial or final recognition result. A series of partial results may preceed the final result.
+  }
+}
+
+/*
+ * Output message indicating the status of the transcription. See
+ * [Status codes](#status-codes) for details about the codes. The message and
+ * details are developer-facing error messages. Included in
+ * [RecognitionResponse](#recognitionresponse).
+ */
+message Status {
+  StatusCode staus_code = 1;  // Return code.
+  string message = 2;         // Brief description of the status.
+  string details = 3;         // Longer description if available.
+}
+
+/*
+ * A set of global status codes to be commonly used by compliant rapeech APIs. 
+ * These codes are purposely misaligned with HTTP status codes to avoid any 
+ * unwanted associations.
+ *
+ * For some of these codes, you may prefer to use a method-specific response. 
+ * For example, instead of the generic NOT_FOUND or ALREADY_EXISTS, you may 
+ * return a more specific message.
+ */
+enum StatusCode { 
+  UNSPECIFIED = 0;      // Unspecified status.
+  OK = 1;               // Success.
+  BAD_REQUEST = 2;      // Invalid message type: the server cannot understand the request. 
+  INVALID_REQUEST = 3;  // The request has an invalid value, is missing a mandatory field, etc.
+  CANCELLED_CLIENT = 4; // Operation terminated by client. The remote system may have changed.
+  CANCELLED_SERVER = 5; // Operation terminated by server. The remote system may have changed.
+  DEADLINE_EXCEEDED = 6;// The deadline set for the operation has expired.
+  NOT_AUTHORIZED = 7;   // The client does not have authorization to perform the operation.
+  PERMISSION_DENIED = 8;// The client does not have authorization to perform the operation on the requested entities.
+  NOT_FOUND = 9;        // The requested entity was not found.
+  ALREADY_EXISTS = 10;  // Cannot create entity as it already exists.
+  NOT_IMPLEMENTED = 11; // Unsupported operation or parameter, e.g. an unsupported media type.
+  UNKNOWN = 15;         // Result does not map to any defined status. Other response values may provide request-specific additional information.
+  TOO_LARGE = 51;       // Status codes 51 and up are less frequently used. A field is too large to be processed due to technical limitations e.g. large audio or other binary block. For arbitrary limitations (e.g. name must be n characters or less), use INVALID_REQUEST.
+  BUSY = 52;            // Server understood the request but could not process it due to lack of  resources. Retry the request as is later.
+  OBSOLETE = 53;        // A message type in the request is no longer supported.
+  RATE_EXCEEDED = 54;   // Similar to BUSY. The client has exceeded the limit of operations per time unit. Retry request as is later.
+  QUOTA_EXCEEDED = 55;  // The client has exceeded quotas related to licensing or payment. See your client representative for additional quotas. 
+  INTERNAL_ERROR = 56;  // An internal system error occurred while processing the request.
+}
+
+/*
+ * 실시간
+ * 준실시간 - 배치성 ㄱ
+ * 베치 -------------> 가입자별 채널 수 관리 이슈
+ *     ㄴ-----------> 내선별로 건건히 처리하여 자연연스럽게 정리됨 ...
+ *     ㄴ-----------> 
+ * RT 사용비율에 따라 처리량 조절에 대한 니즈
+ */
