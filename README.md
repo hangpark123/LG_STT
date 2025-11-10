@@ -45,8 +45,14 @@
 사전 요구사항: Windows, .NET 8 SDK, 마이크 권한
 
 - 패키지 복원 및 실행
-  - `dotnet run`
-  - 파일 입력 모드: `dotnet run -- --file test2.wav` 또는 `dotnet run -- -f test2.wav`
+  - 마이크 모드: `dotnet run`
+  - 파일 입력 모드: `dotnet run -- --file test2.wav`
+  - 선택 옵션(둘 다 지원)
+    - `--sr 8000|16000` 샘플레이트 변경(기본 8000)
+    - `--chunk-ms 100` 청크 크기(ms) 변경(기본 200)
+    - `--result final|partial|immutable` 결과 타입 요청(기본 immutable)
+    - `--tail-ms 700` 파일 모드에서 꼬리 무음 추가(기본 500, 0이면 비활성)
+    - `--gain 1.2` 파일 모드 볼륨 배율(0.1~3.0, 기본 1.0)
 - 서버/보안 설정
   - `ADDRESS`를 실제 gRPC 엔드포인트로 변경 (`http://` 또는 `https://`) (`Program.cs:19`)
   - 필요 시 인증/정책/테넌트 헤더 설정 (`Program.cs:25-28`)

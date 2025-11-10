@@ -23,6 +23,12 @@ class Program
     static int CHUNK_BYTES => (int)(TARGET_SR * CHUNK_SEC * 2);
     const int RECORD_SECONDS_TIMEOUT = 600;
 
+    // Runtime tunables (CLI overrides)
+    static int ACTIVE_SR = TARGET_SR;
+    static double ACTIVE_CHUNK_SEC = CHUNK_SEC;
+    static int ACTIVE_CHUNK_BYTES => (int)(ACTIVE_SR * ACTIVE_CHUNK_SEC * 2);
+    static ResultType ACTIVE_RESULT_TYPE = RESULT_TYPE;
+
     // (필요 시) 헤더
     const string AUTH_BEARER = "";         // "Bearer eyJ..."
     const string SESSION_POLICY_ID = "";   // "rt-policy-01"
@@ -49,6 +55,11 @@ class Program
 
         // File input mode: --file <path> or -f <path>
         string? filePath = null;
+        int? optSr = null;        // --sr 8000|16000
+        int? optChunkMs = null;   // --chunk-ms N
+        string? optResult = null; // --result final|partial|immutable
+        int tailMs = 500;         // --tail-ms N (file mode), default 500ms
+        float gain = 1.0f;        // --gain (file mode volume)
         if (args != null)
         {
             for (int i = 0; i < args.Length; i++)
@@ -58,10 +69,55 @@ class Program
                     string.Equals(a, "-f", StringComparison.OrdinalIgnoreCase))
                 {
                     if (i + 1 < args.Length) filePath = args[i + 1];
-                    break;
+                    i++; continue;
+                }
+                if (string.Equals(a, "--sr", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 < args.Length && int.TryParse(args[i+1], out var v)) { optSr = v; i++; }
+                    continue;
+                }
+                if (string.Equals(a, "--chunk-ms", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 < args.Length && int.TryParse(args[i+1], out var v)) { optChunkMs = v; i++; }
+                    continue;
+                }
+                if (string.Equals(a, "--result", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 < args.Length) { optResult = args[i+1]; i++; }
+                    continue;
+                }
+                if (string.Equals(a, "--tail-ms", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 < args.Length && int.TryParse(args[i+1], out var v)) { tailMs = Math.Max(0, Math.Min(5000, v)); i++; }
+                    continue;
+                }
+                if (string.Equals(a, "--gain", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 < args.Length && float.TryParse(args[i+1], out var v)) { gain = Math.Max(0.1f, Math.Min(3.0f, v)); i++; }
+                    continue;
                 }
             }
         }
+
+        // Apply overrides
+        if (optSr == 8000 || optSr == 16000) ACTIVE_SR = optSr.Value;
+        if (optChunkMs.HasValue && optChunkMs.Value >= 20 && optChunkMs.Value <= 1000)
+            ACTIVE_CHUNK_SEC = optChunkMs.Value / 1000.0;
+        if (!string.IsNullOrWhiteSpace(optResult))
+        {
+            switch (optResult.Trim().ToLowerInvariant())
+            {
+                case "final":
+                    ACTIVE_RESULT_TYPE = ResultType.Final; break;
+                case "partial":
+                    ACTIVE_RESULT_TYPE = ResultType.Partial; break;
+                case "immutable":
+                case "immutable_partial":
+                case "immutable-partial":
+                    ACTIVE_RESULT_TYPE = ResultType.ImmutablePartial; break;
+            }
+        }
+        Console.WriteLine($"[Config] SR={ACTIVE_SR}Hz, chunk={ACTIVE_CHUNK_SEC*1000:F0}ms, result={ACTIVE_RESULT_TYPE}, tailMs={tailMs}, gain={gain:F1}{(filePath!=null?" (file)":" (mic)")}");
 
         using var channel = GrpcChannel.ForAddress(ADDRESS);
         var headers = new Metadata();
@@ -128,9 +184,9 @@ class Program
             {
                 Parameters = new RecognitionParameters
                 {
-                    AudioFormat     = new AudioFormat { Pcm = new PCM { SampleRateHz = (uint)TARGET_SR } },
+                    AudioFormat     = new AudioFormat { Pcm = new PCM { SampleRateHz = (uint)ACTIVE_SR } },
                     RecognitionType = RECOG_TYPE,
-                    ResultType      = RESULT_TYPE
+                    ResultType      = ACTIVE_RESULT_TYPE
                 },
                 CallId = callId,
                 ChannelType = ChannelType.Tx // ★ TX로 고정 (마이크)
@@ -191,11 +247,11 @@ class Program
                 pending.Write(buf, 0, buf.Length);
                 PrintVu(buf);
 
-                while (pending.Length >= CHUNK_BYTES)
+                while (pending.Length >= ACTIVE_CHUNK_BYTES)
                 {
-                    var chunk = new byte[CHUNK_BYTES];
+                    var chunk = new byte[ACTIVE_CHUNK_BYTES];
                     pending.Position = 0;
-                    _ = pending.Read(chunk, 0, CHUNK_BYTES);
+                    _ = pending.Read(chunk, 0, ACTIVE_CHUNK_BYTES);
 
                     var left = pending.Length - pending.Position;
                     if (left > 0)
@@ -219,8 +275,8 @@ class Program
                         sentBytes += chunk.Length;
                         Console.WriteLine($"[Tx] +{chunk.Length} bytes (total {sentBytes} bytes)");
 
-                        // 200ms pacing
-                        nextTick = nextTick.AddMilliseconds(CHUNK_SEC * 1000);
+                        // pacing by ACTIVE_CHUNK_SEC
+                        nextTick = nextTick.AddMilliseconds(ACTIVE_CHUNK_SEC * 1000);
                         var delay = nextTick - DateTime.UtcNow;
                         if (delay.TotalMilliseconds > 0) await Task.Delay(delay);
                     }
@@ -256,12 +312,14 @@ class Program
                 using var afr = new AudioFileReader(filePath);
                 ISampleProvider provider = afr; // 32-bit float samples
                 if (provider.WaveFormat.SampleRate != TARGET_SR)
-                    provider = new WdlResamplingSampleProvider(provider, TARGET_SR);
+                    provider = new WdlResamplingSampleProvider(provider, ACTIVE_SR);
                 if (provider.WaveFormat.Channels == 2)
                     provider = new StereoToMonoSampleProvider(provider) { LeftVolume = 0.5f, RightVolume = 0.5f };
+                if (Math.Abs(gain - 1.0f) > 0.01f)
+                    provider = new VolumeSampleProvider(provider) { Volume = gain };
 
                 var waveProvider = new SampleToWaveProvider16(provider); // mono 16-bit
-                var buf = new byte[CHUNK_BYTES];
+                var buf = new byte[ACTIVE_CHUNK_BYTES];
                 int read;
                 while ((read = waveProvider.Read(buf, 0, buf.Length)) > 0)
                 {
@@ -271,6 +329,20 @@ class Program
                     {
                         try { queue.Add(outBuf); } catch { }
                     }
+                }
+                // Add tail silence to trigger VAD/finalization
+                if (tailMs > 0)
+                {
+                    int tailBytes = (int)(ACTIVE_SR * (tailMs/1000.0) * 2);
+                    int remaining = tailBytes;
+                    while (remaining > 0)
+                    {
+                        int n = Math.Min(ACTIVE_CHUNK_BYTES, remaining);
+                        var zero = new byte[n];
+                        if (!queue.IsAddingCompleted) { try { queue.Add(zero); } catch { } }
+                        remaining -= n;
+                    }
+                    Console.WriteLine($"[File] appended {tailMs}ms of silence.");
                 }
                 Console.WriteLine("[File] enqueued all audio from file.");
             }
@@ -309,11 +381,11 @@ class Program
         {
             try
             {
-                waveIn = new WaveInEvent
-                {
-                    WaveFormat = new WaveFormat(TARGET_SR, 16, 1),
-                    BufferMilliseconds = (int)(CHUNK_SEC * 1000)
-                };
+                    waveIn = new WaveInEvent
+                    {
+                        WaveFormat = new WaveFormat(ACTIVE_SR, 16, 1),
+                        BufferMilliseconds = (int)(ACTIVE_CHUNK_SEC * 1000)
+                    };
                 waveIn.DataAvailable += (s, e) =>
                 {
                     if (!_initOk) return;
@@ -336,8 +408,8 @@ class Program
                 mm ??= enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia);
                 if (mm == null) throw new InvalidOperationException("녹음 장치를 찾을 수 없습니다.");
 
-                wasapi = new WasapiCapture(mm, true);
-                wasapi.WaveFormat = new WaveFormat(TARGET_SR, 16, 1);
+                    wasapi = new WasapiCapture(mm, true);
+                    wasapi.WaveFormat = new WaveFormat(ACTIVE_SR, 16, 1);
                 wasapi.DataAvailable += (s, e) =>
                 {
                     if (!_initOk) return;
