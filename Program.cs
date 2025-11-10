@@ -61,10 +61,14 @@ class Program
         int? optSr = null;        // --sr 8000|16000
         int? optChunkMs = null;   // --chunk-ms N
         string? optResult = null; // --result final|partial|immutable
-        int tailMs = 1200;         // --tail-ms N (file mode), default 500ms
+        int tailMs = 1200;         // --tail-ms N (file mode)
         float gain = 1.0f;        // --gain (file mode volume)
         string? optChannel = null; // --channel rx|tx
         bool verbose = false;      // --verbose
+        bool burst = false;        // --burst (disable pacing)
+        int postWaitMs = 3000;     // --post-wait-ms N
+        string? logPath = null;    // --log <path>
+        bool noLog = false;        // --no-log
         if (args != null)
         {
             for (int i = 0; i < args.Length; i++)
@@ -110,6 +114,24 @@ class Program
                 {
                     verbose = true; continue;
                 }
+                if (string.Equals(a, "--burst", StringComparison.OrdinalIgnoreCase))
+                {
+                    burst = true; continue;
+                }
+                if (string.Equals(a, "--post-wait-ms", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 < args.Length && int.TryParse(args[i+1], out var v)) { postWaitMs = Math.Max(0, Math.Min(30000, v)); i++; }
+                    continue;
+                }
+                if (string.Equals(a, "--log", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 < args.Length) { logPath = args[i+1]; i++; }
+                    continue;
+                }
+                if (string.Equals(a, "--no-log", StringComparison.OrdinalIgnoreCase))
+                {
+                    noLog = true; continue;
+                }
             }
         }
 
@@ -136,7 +158,7 @@ class Program
             var c = optChannel.Trim().ToLowerInvariant();
             if (c == "rx") ACTIVE_CHANNEL_TYPE = ChannelType.Rx; else ACTIVE_CHANNEL_TYPE = ChannelType.Tx;
         }
-        Console.WriteLine($"[Config] SR={ACTIVE_SR}Hz, chunk={ACTIVE_CHUNK_SEC*1000:F0}ms, result={ACTIVE_RESULT_TYPE}, channel={ACTIVE_CHANNEL_TYPE}, tailMs={tailMs}, gain={gain:F1}{(filePath!=null?" (file)":" (mic)")}{(verbose?" verbose":"")}");
+        Console.WriteLine($"[Config] SR={ACTIVE_SR}Hz, chunk={ACTIVE_CHUNK_SEC*1000:F0}ms, result={ACTIVE_RESULT_TYPE}, channel={ACTIVE_CHANNEL_TYPE}, tailMs={tailMs}, gain={gain:F1}{(filePath!=null?" (file)":" (mic)")}{(verbose?" verbose":"")}{(burst?" burst":"")}, postWaitMs={postWaitMs}");
 
         using var channel = GrpcChannel.ForAddress(ADDRESS);
         var headers = new Metadata();
@@ -148,6 +170,23 @@ class Program
         using var call = client.Recognize(headers, deadline: DateTime.UtcNow.AddMinutes(15));
 
         string callId = Guid.NewGuid().ToString();
+
+        // Setup log file tee (exclude [Tx] lines)
+        if (!noLog)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(logPath))
+                {
+                    var dir = Path.Combine(AppContext.BaseDirectory, "logs");
+                    Directory.CreateDirectory(dir);
+                    logPath = Path.Combine(dir, $"session_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{callId}.txt");
+                }
+                Console.SetOut(new TeeWriter(Console.Out, logPath));
+                Console.WriteLine($"[Log] writing to {logPath}");
+            }
+            catch { }
+        }
 
         // 수신(Task)
         var receiverTask = Task.Run(async () =>
@@ -294,10 +333,13 @@ class Program
                         sentBytes += chunk.Length;
                         Console.WriteLine($"[Tx] +{chunk.Length} bytes (total {sentBytes} bytes)");
 
-                        // pacing by ACTIVE_CHUNK_SEC
-                        nextTick = nextTick.AddMilliseconds(ACTIVE_CHUNK_SEC * 1000);
-                        var delay = nextTick - DateTime.UtcNow;
-                        if (delay.TotalMilliseconds > 0) await Task.Delay(delay);
+                        if (!burst)
+                        {
+                            // pacing by ACTIVE_CHUNK_SEC
+                            nextTick = nextTick.AddMilliseconds(ACTIVE_CHUNK_SEC * 1000);
+                            var delay = nextTick - DateTime.UtcNow;
+                            if (delay.TotalMilliseconds > 0) await Task.Delay(delay);
+                        }
                     }
                 }
             }
@@ -378,10 +420,19 @@ class Program
             await call.RequestStream.CompleteAsync();
             Console.WriteLine("[End] sent & request stream completed.");
 
+            // Optional post-wait for extra results
+            if (postWaitMs > 0)
+            {
+                await Task.WhenAny(receiverTask, Task.Delay(postWaitMs));
+            }
+
             // Stop watchdog and wait receiver
             watchdogCts.Cancel();
             try { await watchdogTask; } catch { }
-            await receiverTask;
+            if (receiverTask.IsCompleted)
+            {
+                try { await receiverTask; } catch { }
+            }
 
             var st2 = call.GetStatus();
             Console.WriteLine($"[FinalStatus] {st2.StatusCode} - {st2.Detail}");
@@ -628,6 +679,38 @@ class Program
         double rms = Math.Sqrt(sum / (double)samples) / 32768.0; // 0..1
         int bars = (int)Math.Round(rms * 30);
         Console.WriteLine($"[VU] {new string('#', Math.Min(bars, 30))}");
+    }
+
+    // Console tee writer to duplicate output to a log file, filtering out [Tx] lines
+    class TeeWriter : TextWriter
+    {
+        private readonly TextWriter _console;
+        private readonly StreamWriter _file;
+        public TeeWriter(TextWriter console, string path)
+        {
+            _console = console;
+            _file = new StreamWriter(File.Open(path, FileMode.Create, FileAccess.Write, FileShare.Read)) { AutoFlush = true };
+        }
+        public override Encoding Encoding => _console.Encoding;
+        public override void WriteLine(string? value)
+        {
+            _console.WriteLine(value);
+            var line = value ?? string.Empty;
+            if (!line.StartsWith("[Tx]"))
+            {
+                _file.WriteLine(line);
+            }
+        }
+        public override void Write(char value)
+        {
+            _console.Write(value);
+            // accumulate only full lines to file via WriteLine override
+        }
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            try { _file.Dispose(); } catch { }
+        }
     }
 }
 
