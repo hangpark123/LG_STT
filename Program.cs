@@ -240,12 +240,19 @@ class Program
             Console.WriteLine($"[Tx] total={(sentBytes/1024.0):F1} KB");
         });
 
-        // If file input mode is specified, stream file -> queue, finalize, and return.
+        // If file input mode is specified, stream file -> queue, then send End and finalize.
         if (!string.IsNullOrWhiteSpace(filePath))
         {
             Console.WriteLine($"[File] input mode: {filePath}");
             try
             {
+                // Wait for server init OK to avoid dropping audio before _initOk is set
+                var waitStart = DateTime.UtcNow;
+                while (!_initOk && (DateTime.UtcNow - waitStart).TotalSeconds < 10)
+                {
+                    await Task.Delay(50);
+                }
+
                 using var afr = new AudioFileReader(filePath);
                 ISampleProvider provider = afr; // 32-bit float samples
                 if (provider.WaveFormat.SampleRate != TARGET_SR)
@@ -272,15 +279,18 @@ class Program
                 queue.CompleteAdding();
             }
 
+            // Wait for sender to flush everything before sending End
+            await senderTask;
+
             // Send End and complete request stream
             await SendEndAsync(call, callId);
             await call.RequestStream.CompleteAsync();
             Console.WriteLine("[End] sent & request stream completed.");
 
-            // Stop watchdog and wait tasks
+            // Stop watchdog and wait receiver
             watchdogCts.Cancel();
             try { await watchdogTask; } catch { }
-            await Task.WhenAll(senderTask, receiverTask);
+            await receiverTask;
 
             var st2 = call.GetStatus();
             Console.WriteLine($"[FinalStatus] {st2.StatusCode} - {st2.Detail}");
