@@ -1,4 +1,4 @@
-ï»¿using System;
+using System;
 using System.IO;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
@@ -16,9 +16,9 @@ using NAudio.Wave.SampleProviders;
 
 class Program
 {
-    // ===== ì†ëŒ€ê¸° ì‰½ê²Œ ëª¨ì•„ë‘” ì„¤ì • =====
-    const string ADDRESS = "http://nlb.aibot-dev.lguplus.co.kr:13000"; // TLSë©´ https://
-    const int TARGET_SR = 8000;            // â˜… ë¨¼ì € 8000ìœ¼ë¡œ í…ŒìŠ¤íŠ¸ â†’ í•„ìš”ì‹œ 16000ìœ¼ë¡œ ë³€ê²½
+    // ===== ¼Õ´ë±â ½±°Ô ¸ğ¾ÆµĞ ¼³Á¤ =====
+    const string ADDRESS = "http://nlb.aibot-dev.lguplus.co.kr:13000"; // TLS¸é https://
+    const int TARGET_SR = 8000;            // ¡Ú ¸ÕÀú 8000À¸·Î Å×½ºÆ® ¡æ ÇÊ¿ä½Ã 16000À¸·Î º¯°æ
     const double CHUNK_SEC = 0.2;          // 200ms
     static int CHUNK_BYTES => (int)(TARGET_SR * CHUNK_SEC * 2);
     const int RECORD_SECONDS_TIMEOUT = 600;
@@ -28,29 +28,30 @@ class Program
     static double ACTIVE_CHUNK_SEC = CHUNK_SEC;
     static int ACTIVE_CHUNK_BYTES => (int)(ACTIVE_SR * ACTIVE_CHUNK_SEC * 2);
     static ResultType ACTIVE_RESULT_TYPE = RESULT_TYPE;
+    static ChannelType ACTIVE_CHANNEL_TYPE = ChannelType.Tx;
 
-    // (í•„ìš” ì‹œ) í—¤ë”
+    // (ÇÊ¿ä ½Ã) Çì´õ
     const string AUTH_BEARER = "";         // "Bearer eyJ..."
     const string SESSION_POLICY_ID = "";   // "rt-policy-01"
     const string TENANT_ID = "";           // "lguplus-b2b-dev"
 
-    // Init data(map) â€” ë“±ë¡ëœ ê°’ê³¼ ë°˜ë“œì‹œ ë™ì¼í•˜ê²Œ
+    // Init data(map) ? µî·ÏµÈ °ª°ú ¹İµå½Ã µ¿ÀÏÇÏ°Ô
     const string DATA_client        = "IRLink-Ivo";
     const string DATA_custom_number = "3002";
     const string DATA_user_exten    = "2825";
-    const string DATA_channel_type  = "TX";   // â˜… ë¡œì»¬ ë§ˆì´í¬ë©´ TXê°€ ì¼ë°˜ì 
+    const string DATA_channel_type  = "TX";   // ¡Ú ·ÎÄÃ ¸¶ÀÌÅ©¸é TX°¡ ÀÏ¹İÀû
     const string DATA_engine        = "IxiRecognizer";
 
-    static readonly ResultType RESULT_TYPE = ResultType.ImmutablePartial;
+    static readonly ResultType RESULT_TYPE = ResultType.Final;
     static readonly RecognitionType RECOG_TYPE = RecognitionType.Realtime;
 
-    // ìƒíƒœ í”Œë˜ê·¸
+    // »óÅÂ ÇÃ·¡±×
     static volatile bool _initOk = false;
     static DateTime _lastResultAt = DateTime.UtcNow;
 
     static async Task Main(string[]? args)
     {
-        Console.WriteLine("[Info] ì‹¤ì‹œê°„ ë§ˆì´í¬ ìŠ¤íŠ¸ë¦¬ë° ì‹œì‘. (F=Final ê°•ì œ, Enter=ì¢…ë£Œ)");
+        Console.WriteLine("[Info] ½Ç½Ã°£ ¸¶ÀÌÅ© ½ºÆ®¸®¹Ö ½ÃÀÛ. (F=Final °­Á¦, Enter=Á¾·á)");
         Console.WriteLine($"[Info] SAMPLE_RATE={TARGET_SR}Hz, CHUNK={CHUNK_BYTES} bytes");
 
         // File input mode: --file <path> or -f <path>
@@ -58,8 +59,10 @@ class Program
         int? optSr = null;        // --sr 8000|16000
         int? optChunkMs = null;   // --chunk-ms N
         string? optResult = null; // --result final|partial|immutable
-        int tailMs = 500;         // --tail-ms N (file mode), default 500ms
+        int tailMs = 1200;         // --tail-ms N (file mode), default 500ms
         float gain = 1.0f;        // --gain (file mode volume)
+        string? optChannel = null; // --channel rx|tx
+        bool verbose = false;      // --verbose
         if (args != null)
         {
             for (int i = 0; i < args.Length; i++)
@@ -96,6 +99,15 @@ class Program
                     if (i + 1 < args.Length && float.TryParse(args[i+1], out var v)) { gain = Math.Max(0.1f, Math.Min(3.0f, v)); i++; }
                     continue;
                 }
+                if (string.Equals(a, "--channel", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 < args.Length) { optChannel = args[i+1]; i++; }
+                    continue;
+                }
+                if (string.Equals(a, "--verbose", StringComparison.OrdinalIgnoreCase))
+                {
+                    verbose = true; continue;
+                }
             }
         }
 
@@ -117,7 +129,12 @@ class Program
                     ACTIVE_RESULT_TYPE = ResultType.ImmutablePartial; break;
             }
         }
-        Console.WriteLine($"[Config] SR={ACTIVE_SR}Hz, chunk={ACTIVE_CHUNK_SEC*1000:F0}ms, result={ACTIVE_RESULT_TYPE}, tailMs={tailMs}, gain={gain:F1}{(filePath!=null?" (file)":" (mic)")}");
+        if (!string.IsNullOrWhiteSpace(optChannel))
+        {
+            var c = optChannel.Trim().ToLowerInvariant();
+            if (c == "rx") ACTIVE_CHANNEL_TYPE = ChannelType.Rx; else ACTIVE_CHANNEL_TYPE = ChannelType.Tx;
+        }
+        Console.WriteLine($"[Config] SR={ACTIVE_SR}Hz, chunk={ACTIVE_CHUNK_SEC*1000:F0}ms, result={ACTIVE_RESULT_TYPE}, channel={ACTIVE_CHANNEL_TYPE}, tailMs={tailMs}, gain={gain:F1}{(filePath!=null?" (file)":" (mic)")}{(verbose?" verbose":"")}");
 
         using var channel = GrpcChannel.ForAddress(ADDRESS);
         var headers = new Metadata();
@@ -130,7 +147,7 @@ class Program
 
         string callId = Guid.NewGuid().ToString();
 
-        // ìˆ˜ì‹ (Task)
+        // ¼ö½Å(Task)
         var receiverTask = Task.Run(async () =>
         {
             try
@@ -154,7 +171,7 @@ class Program
                         if (resp.Status.StausCode == RpcStatusCode.Ok)
                         {
                             _initOk = true;
-                            _lastResultAt = DateTime.UtcNow; // ì›Œì¹˜ë… ê¸°ì¤€ì 
+                            _lastResultAt = DateTime.UtcNow; // ¿öÄ¡µ¶ ±âÁØÁ¡
                         }
                         continue;
                     }
@@ -189,7 +206,7 @@ class Program
                     ResultType      = ACTIVE_RESULT_TYPE
                 },
                 CallId = callId,
-                ChannelType = ChannelType.Tx // â˜… TXë¡œ ê³ ì • (ë§ˆì´í¬)
+                ChannelType = ACTIVE_CHANNEL_TYPE // ¡Ú TX·Î °íÁ¤ (¸¶ÀÌÅ©)
             }
         };
         initReq.RecognitionInitMessage.Data.Add("client",        DATA_client);
@@ -203,7 +220,7 @@ class Program
 
         var queue = new BlockingCollection<byte[]>(boundedCapacity: 200);
 
-        // í‚¤ ì…ë ¥: F=Final ê°•ì œ, Enter=ì¢…ë£Œ
+        // Å° ÀÔ·Â: F=Final °­Á¦, Enter=Á¾·á
         var keyTask = Task.Run(() =>
         {
             while (true)
@@ -213,12 +230,12 @@ class Program
                 if (key.Key == ConsoleKey.F)
                 {
                     _ = SendEndAsync(call, callId);
-                    Console.WriteLine("[Key] Final ìš”ì²­(F) ì „ì†¡.");
+                    Console.WriteLine("[Key] Final ¿äÃ»(F) Àü¼Û.");
                 }
             }
         });
 
-        // ì›Œì¹˜ë…(10ì´ˆê°„ ê²°ê³¼ ì—†ìœ¼ë©´ íŒíŠ¸)
+        // ¿öÄ¡µ¶(10ÃÊ°£ °á°ú ¾øÀ¸¸é ÈùÆ®)
         var watchdogCts = new CancellationTokenSource();
         var watchdogTask = Task.Run(async () =>
         {
@@ -228,14 +245,14 @@ class Program
                 var idle = (DateTime.UtcNow - _lastResultAt).TotalSeconds;
                 if (_initOk && idle > 10)
                 {
-                    Console.WriteLine("[Warn] 10ì´ˆê°„ ì¸ì‹ ê²°ê³¼ ì—†ìŒ â†’ RX/TX, ìƒ˜í”Œë ˆì´íŠ¸(8k/16k), policy/engine ê°’ ì ê²€. " +
-                                      "ëª‡ ì´ˆ ì´ìƒ ë˜ë°•ë˜ë°• ë§í•˜ê³ , í•„ìš”í•˜ë©´ F í‚¤ë¡œ Final ê°•ì œ í›„ ê²°ê³¼ í™•ì¸.");
-                    _lastResultAt = DateTime.UtcNow; // ì¤‘ë³µ ê²½ê³  ì–µì œ
+                    Console.WriteLine("[Warn] 10ÃÊ°£ ÀÎ½Ä °á°ú ¾øÀ½ ¡æ RX/TX, »ùÇÃ·¹ÀÌÆ®(8k/16k), policy/engine °ª Á¡°Ë. " +
+                                      "¸î ÃÊ ÀÌ»ó ¶Ç¹Ú¶Ç¹Ú ¸»ÇÏ°í, ÇÊ¿äÇÏ¸é F Å°·Î Final °­Á¦ ÈÄ °á°ú È®ÀÎ.");
+                    _lastResultAt = DateTime.UtcNow; // Áßº¹ °æ°í ¾ïÁ¦
                 }
             }
         }, watchdogCts.Token);
 
-        // ì†¡ì‹ (Task)
+        // ¼Û½Å(Task)
         var senderTask = Task.Run(async () =>
         {
             using var pending = new MemoryStream();
@@ -372,7 +389,7 @@ class Program
             return;
         }
 
-        // ===== ì…ë ¥ ì¥ì¹˜ ì—´ê¸°: MME â†’ ì‹¤íŒ¨ ì‹œ WASAPI =====
+        // ===== ÀÔ·Â ÀåÄ¡ ¿­±â: MME ¡æ ½ÇÆĞ ½Ã WASAPI =====
         IDisposable? capture = null;
         WaveInEvent? waveIn = null;
         WasapiCapture? wasapi = null;
@@ -398,7 +415,7 @@ class Program
                 };
                 waveIn.StartRecording();
                 capture = waveIn;
-                Console.WriteLine("[Mic] MME ìº¡ì²˜ ì‹œì‘.");
+                Console.WriteLine("[Mic] MME Ä¸Ã³ ½ÃÀÛ.");
             }
             catch
             {
@@ -406,7 +423,7 @@ class Program
                 MMDevice? mm = null;
                 try { mm = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications); } catch { }
                 mm ??= enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia);
-                if (mm == null) throw new InvalidOperationException("ë…¹ìŒ ì¥ì¹˜ë¥¼ ì°¾ì„ ìˆ˜ ì—†ìŠµë‹ˆë‹¤.");
+                if (mm == null) throw new InvalidOperationException("³ìÀ½ ÀåÄ¡¸¦ Ã£À» ¼ö ¾ø½À´Ï´Ù.");
 
                     wasapi = new WasapiCapture(mm, true);
                     wasapi.WaveFormat = new WaveFormat(ACTIVE_SR, 16, 1);
@@ -444,10 +461,10 @@ class Program
                 };
                 wasapi.StartRecording();
                 capture = wasapi;
-                Console.WriteLine("[Mic] WASAPI ìº¡ì²˜ ì‹œì‘.");
+                Console.WriteLine("[Mic] WASAPI Ä¸Ã³ ½ÃÀÛ.");
             }
 
-            Console.WriteLine("F(íŒŒì´ë„ ê°•ì œ) ë˜ëŠ” Enter(ì¢…ë£Œ)ë¥¼ ëˆ„ë¥´ì„¸ìš”.");
+            Console.WriteLine("F(ÆÄÀÌ³Î °­Á¦) ¶Ç´Â Enter(Á¾·á)¸¦ ´©¸£¼¼¿ä.");
             var timeoutTask = Task.Delay(TimeSpan.FromSeconds(RECORD_SECONDS_TIMEOUT));
             await Task.WhenAny(keyTask, timeoutTask);
         }
@@ -459,12 +476,12 @@ class Program
             capture?.Dispose();
         }
 
-        // ì •ìƒ ì¢…ë£Œ(End) â€” ì´ë¯¸ Fë¡œ ë³´ëƒˆë‹¤ë©´ ì¤‘ë³µ ì „ì†¡ë¼ë„ ë¬¸ì œ ì—†ìŒ(ì„œë²„ê°€ ë¬´ì‹œ)
+        // Á¤»ó Á¾·á(End) ? ÀÌ¹Ì F·Î º¸³Â´Ù¸é Áßº¹ Àü¼ÛµÅµµ ¹®Á¦ ¾øÀ½(¼­¹ö°¡ ¹«½Ã)
         await SendEndAsync(call, callId);
         await call.RequestStream.CompleteAsync();
         Console.WriteLine("[End] sent & request stream completed.");
 
-        // ì›Œì¹˜ë… ì¢…ë£Œ
+        // ¿öÄ¡µ¶ Á¾·á
         watchdogCts.Cancel();
         try { await watchdogTask; } catch { }
 
@@ -489,11 +506,11 @@ class Program
         }
         catch
         {
-            // ì´ë¯¸ ë³´ëƒˆê±°ë‚˜ ìŠ¤íŠ¸ë¦¼ ì¢…ë£Œ ìƒíƒœì¼ ìˆ˜ ìˆìŒ â€” ë¬´ì‹œ
+            // ÀÌ¹Ì º¸³Â°Å³ª ½ºÆ®¸² Á¾·á »óÅÂÀÏ ¼ö ÀÖÀ½ ? ¹«½Ã
         }
     }
 
-    // ê²°ê³¼ í…ìŠ¤íŠ¸ ë½‘ê¸° (ë¦¬í”Œë ‰ì…˜Â·JSON í˜¼í•©)
+    // °á°ú ÅØ½ºÆ® »Ì±â (¸®ÇÃ·º¼Ç¡¤JSON È¥ÇÕ)
     static string? TryExtractText(Google.Protobuf.IMessage resultMsg, out bool? isFinal)
     {
         isFinal = null;
@@ -595,7 +612,7 @@ class Program
         return null;
     }
 
-    // ê°„ë‹¨ VU ë¯¸í„°
+    // °£´Ü VU ¹ÌÅÍ
     static void PrintVu(byte[] buf)
     {
         int samples = buf.Length / 2;

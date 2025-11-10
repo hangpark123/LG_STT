@@ -1,79 +1,77 @@
-# LG_STT – gRPC ASR Client (C#/.NET 8)
+# LG_STT ??gRPC ASR Client (C#/.NET 8)
 
-이 콘솔 앱은 NAudio로 마이크 입력을 캡처해 gRPC 양방향 스트리밍으로 ASR 서버에 전송하고, 인식 결과를 JSON/텍스트로 출력합니다. 핵심 진입점은 `Program.cs:44`의 `Main`입니다.
+??콘솔 ?��? NAudio�?마이???�력??캡처??gRPC ?�방???�트리밍?�로 ASR ?�버???�송?�고, ?�식 결과�?JSON/?�스?�로 출력?�니?? ?�심 진입?��? `Program.cs:44`??`Main`?�니??
 
 ## 개요
-- 샘플레이트: 기본 8kHz (`Program.cs:20`)
-- 전송 청크: 200ms (`Program.cs:21-23`)
-- 서버 초기화 OK 상태 이후 오디오 전송 시작 (`Program.cs:78-86`, `Program.cs:196-204`)
-- 결과(JSON/텍스트) 실시간 표시, `F`(Final 요청) 또는 `Enter`(종료)로 세션 종료
+- ?�플?�이?? 기본 8kHz (`Program.cs:20`)
+- ?�송 �?��: 200ms (`Program.cs:21-23`)
+- ?�버 초기??OK ?�태 ?�후 ?�디???�송 ?�작 (`Program.cs:78-86`, `Program.cs:196-204`)
+- 결과(JSON/?�스?? ?�시�??�시, `F`(Final ?�청) ?�는 `Enter`(종료)�??�션 종료
 
 ## 구조
-- gRPC 서비스/메시지: `Protos/recognizer.proto:14-16` (Recognize, 양방향 스트리밍)
-- 요청 oneof: Init/Audio/End (`Protos/recognizer.proto:24-30`)
+- gRPC ?�비??메시지: `Protos/recognizer.proto:14-16` (Recognize, ?�방???�트리밍)
+- ?�청 oneof: Init/Audio/End (`Protos/recognizer.proto:24-30`)
 - 결과 메시지: Result/Hypothesis/Word (`Protos/rapeech/asr/v1/result.proto:15-20`, `Protos/rapeech/asr/v1/result.proto:41-50`)
-- 빌드시 `Grpc.Tools`가 C# 클라이언트 코드를 생성합니다 (`SttClient.csproj:18`)
+- 빌드??`Grpc.Tools`가 C# ?�라?�언??코드�??�성?�니??(`SttClient.csproj:18`)
 
-## 동작 흐름
-1) gRPC 채널/클라이언트 생성 (`Program.cs:49-56`)
-2) 초기화 메시지 전송 (파라미터/CallId/ChannelType/Data) (`Program.cs:107-129`)
-3) 마이크 캡처 시작, 큐에 바이트 버퍼 적재 (`Program.cs:231-299`)
-4) 200ms 단위로 오디오 청크 전송 및 페이싱 (`Program.cs:172-210`)
-5) 응답 수신 루프: Status로 초기화 확인 → Result 수신 시 JSON/텍스트 표시 (`Program.cs:75-99`)
-6) 종료: `F`로 Final 요청 또는 `Enter/타임아웃` 후 End 전송+스트림 완료 (`Program.cs:133-146`, `Program.cs:313-317`)
+## ?�작 ?�름
+1) gRPC 채널/?�라?�언???�성 (`Program.cs:49-56`)
+2) 초기??메시지 ?�송 (?�라미터/CallId/ChannelType/Data) (`Program.cs:107-129`)
+3) 마이??캡처 ?�작, ?�에 바이??버퍼 ?�재 (`Program.cs:231-299`)
+4) 200ms ?�위�??�디??�?�� ?�송 �??�이??(`Program.cs:172-210`)
+5) ?�답 ?�신 루프: Status�?초기???�인 ??Result ?�신 ??JSON/?�스???�시 (`Program.cs:75-99`)
+6) 종료: `F`�?Final ?�청 ?�는 `Enter/?�?�아?? ??End ?�송+?�트�??�료 (`Program.cs:133-146`, `Program.cs:313-317`)
 
-## 주요 설정값
-- 서버 주소: `ADDRESS` (`Program.cs:19`)
-- 샘플레이트/청크: `TARGET_SR`, `CHUNK_SEC`, `CHUNK_BYTES` (`Program.cs:20-23`)
-- 인증/정책/테넌트 헤더: `AUTH_BEARER`, `SESSION_POLICY_ID`, `TENANT_ID` + 적용 (`Program.cs:25-28`, `Program.cs:50-53`)
-- Init 데이터 맵: client/custom_number/user_exten/channel_type/engine (`Program.cs:30-35`, `Program.cs:122-126`)
-- 결과/인식 유형: `RESULT_TYPE`, `RECOG_TYPE` (`Program.cs:37-38`)
+## 주요 ?�정�?- ?�버 주소: `ADDRESS` (`Program.cs:19`)
+- ?�플?�이??�?��: `TARGET_SR`, `CHUNK_SEC`, `CHUNK_BYTES` (`Program.cs:20-23`)
+- ?�증/?�책/?�넌???�더: `AUTH_BEARER`, `SESSION_POLICY_ID`, `TENANT_ID` + ?�용 (`Program.cs:25-28`, `Program.cs:50-53`)
+- Init ?�이??�? client/custom_number/user_exten/channel_type/engine (`Program.cs:30-35`, `Program.cs:122-126`)
+- 결과/?�식 ?�형: `RESULT_TYPE`, `RECOG_TYPE` (`Program.cs:37-38`)
 
-## 오디오 캡처
-- 우선 `WaveInEvent`(MME) 사용, 실패 시 `WasapiCapture`로 폴백 (`Program.cs:231-299`)
-- 포맷: 모노 16bit PCM, 샘플레이트는 `TARGET_SR` 적용
-- WASAPI float 포맷 시 16bit PCM 변환 후 큐 적재 (`Program.cs:268-284`)
-- VU 표시: RMS 기반 막대 출력 (`Program.cs:419-433`)
+## ?�디??캡처
+- ?�선 `WaveInEvent`(MME) ?�용, ?�패 ??`WasapiCapture`�??�백 (`Program.cs:231-299`)
+- ?�맷: 모노 16bit PCM, ?�플?�이?�는 `TARGET_SR` ?�용
+- WASAPI float ?�맷 ??16bit PCM 변???????�재 (`Program.cs:268-284`)
+- VU ?�시: RMS 기반 막�? 출력 (`Program.cs:419-433`)
 
 ## 결과 처리
-- 원본 JSON 출력 (`Program.cs:91-92`)
-- 텍스트 추출: 리플렉션 및 대체 키 탐색 (`Program.cs:347-417`)
-  - `Text`/`Transcript`/`Alternatives`/`Words`/JSON 키("transcript"/"text"/"utterance") 순차 탐색
-  - `Final`/`IsFinal` 추출 시 `(FINAL)` 표시
+- ?�본 JSON 출력 (`Program.cs:91-92`)
+- ?�스??추출: 리플?�션 �??��????�색 (`Program.cs:347-417`)
+  - `Text`/`Transcript`/`Alternatives`/`Words`/JSON ??"transcript"/"text"/"utterance") ?�차 ?�색
+  - `Final`/`IsFinal` 추출 ??`(FINAL)` ?�시
 
-## 실행 방법
-사전 요구사항: Windows, .NET 8 SDK, 마이크 권한
+## ?�행 방법
+?�전 ?�구?�항: Windows, .NET 8 SDK, 마이??권한
 
-- 패키지 복원 및 실행
-  - 마이크 모드: `dotnet run`
-  - 파일 입력 모드: `dotnet run -- --file test2.wav`
-  - 선택 옵션(둘 다 지원)
-    - `--sr 8000|16000` 샘플레이트 변경(기본 8000)
-    - `--chunk-ms 100` 청크 크기(ms) 변경(기본 200)
-    - `--result final|partial|immutable` 결과 타입 요청(기본 immutable)
-    - `--tail-ms 700` 파일 모드에서 꼬리 무음 추가(기본 500, 0이면 비활성)
-    - `--gain 1.2` 파일 모드 볼륨 배율(0.1~3.0, 기본 1.0)
-- 서버/보안 설정
-  - `ADDRESS`를 실제 gRPC 엔드포인트로 변경 (`http://` 또는 `https://`) (`Program.cs:19`)
-  - 필요 시 인증/정책/테넌트 헤더 설정 (`Program.cs:25-28`)
+- ?�키지 복원 �??�행
+  - 마이??모드: `dotnet run`
+  - ?�일 ?�력 모드: `dotnet run -- --file test2.wav`
+  - ?�택 ?�션(????지??
+    - `--sr 8000|16000` ?�플?�이??변�?기본 8000)
+    - `--chunk-ms 100` �?�� ?�기(ms) 변�?기본 200)
+    - `--result final|partial|immutable` 결과 ?�???�청(기본 immutable)
+    - `--tail-ms 700` ?�일 모드?�서 꼬리 무음 추�?(기본 500, 0?�면 비활??
+    - `--gain 1.2` ?�일 모드 볼륨 배율(0.1~3.0, 기본 1.0)
+- ?�버/보안 ?�정
+  - `ADDRESS`�??�제 gRPC ?�드?�인?�로 변�?(`http://` ?�는 `https://`) (`Program.cs:19`)
+  - ?�요 ???�증/?�책/?�넌???�더 ?�정 (`Program.cs:25-28`)
 - 조작
-  - `F`: Final 요청(서버에 End 메시지 전송)
-  - `Enter`: 세션 종료(타임아웃 `RECORD_SECONDS_TIMEOUT`도 존재, 기본 600초)
+  - `F`: Final ?�청(?�버??End 메시지 ?�송)
+  - `Enter`: ?�션 종료(?�?�아??`RECORD_SECONDS_TIMEOUT`??존재, 기본 600�?
 
-## 자주 하는 변경
-- 16kHz 전환: `TARGET_SR = 16000` (`Program.cs:20`)
-- HTTPS 사용: `ADDRESS`를 `https://...`로 변경 후 서버 인증서 신뢰 구성 (`Program.cs:19`)
-- 채널 타입 변경: `ChannelType.Rx`/`Tx` 설정 (`Program.cs:118-121`)
-- 결과 형태 조절: `RESULT_TYPE`/`RECOG_TYPE` 수정 (`Program.cs:37-38`)
-- 파일 입력 모드 추가(옵션): 현재는 마이크만 송출. 필요 시 `test2.wav`를 읽어 `queue`에 공급하는 경로를 추가할 수 있습니다.
+## ?�주 ?�는 변�?- 16kHz ?�환: `TARGET_SR = 16000` (`Program.cs:20`)
+- HTTPS ?�용: `ADDRESS`�?`https://...`�?변�????�버 ?�증???�뢰 구성 (`Program.cs:19`)
+- 채널 ?�??변�? `ChannelType.Rx`/`Tx` ?�정 (`Program.cs:118-121`)
+- 결과 ?�태 조절: `RESULT_TYPE`/`RECOG_TYPE` ?�정 (`Program.cs:37-38`)
+- ?�일 ?�력 모드 추�?(?�션): ?�재??마이?�만 ?�출. ?�요 ??`test2.wav`�??�어 `queue`??공급?�는 경로�?추�??????�습?�다.
 
-## 프로젝트
-- 대상 프레임워크: .NET 8 (`SttClient.csproj:5`)
-- 의존성: `Google.Protobuf`, `Grpc.Net.Client`, `Grpc.Tools`, `NAudio` (`SttClient.csproj:11-17`)
-- 프로토 자동 생성: `Protos/**.proto` → 클라이언트 코드 (`SttClient.csproj:18`)
+## ?�로?�트
+- ?�???�레?�워?? .NET 8 (`SttClient.csproj:5`)
+- ?�존?? `Google.Protobuf`, `Grpc.Net.Client`, `Grpc.Tools`, `NAudio` (`SttClient.csproj:11-17`)
+- ?�로???�동 ?�성: `Protos/**.proto` ???�라?�언??코드 (`SttClient.csproj:18`)
 
 ## 참고
-- 콘솔 한글 출력이 깨질 경우, 터미널 인코딩/폰트를 UTF-8로 맞추거나 파일을 UTF-8(BOM)으로 저장해 보세요.
+- 콘솔 ?��? 출력??깨질 경우, ?��????�코???�트�?UTF-8�?맞추거나 ?�일??UTF-8(BOM)?�로 ?�?�해 보세??
 
 ***
-문의나 개선 요청(파일 입력 모드, 설정값 스위치, HTTPS 설정 등)이 있으면 이슈로 남겨 주세요.
+문의??개선 ?�청(?�일 ?�력 모드, ?�정�??�위�? HTTPS ?�정 ?????�으�??�슈�??�겨 주세??
