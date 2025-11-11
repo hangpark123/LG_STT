@@ -74,6 +74,21 @@ class TeeLogger:
             pass
 
 
+def _make_channel(address: str):
+    addr = address.strip()
+    use_tls = False
+    if addr.startswith('http://'):
+        addr = addr[7:]
+    elif addr.startswith('https://'):
+        addr = addr[8:]
+        use_tls = True
+    # drop any path suffix
+    addr = addr.split('/', 1)[0]
+    if use_tls:
+        return grpc_aio.secure_channel(addr, grpc.ssl_channel_credentials())
+    return grpc_aio.insecure_channel(addr)
+
+
 async def run(args):
     address = args.address
     target_sr = args.sr
@@ -98,8 +113,8 @@ async def run(args):
             log_path = logs_dir / f'session_{time.strftime("%Y%m%d_%H%M%S")}.txt'
     logger = TeeLogger(log_path)
 
-    # Channel (plaintext)
-    channel = grpc_aio.insecure_channel(address)
+    # Channel: supports host:port, http://host:port, https://host:port
+    channel = _make_channel(address)
     stub = rec_grpc.RecognizerStub(channel)
 
     metadata = []
