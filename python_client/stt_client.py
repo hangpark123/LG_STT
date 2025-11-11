@@ -14,9 +14,9 @@ import grpc
 import grpc.aio as grpc_aio
 
 # Generated modules (after running gen_protos.py)
-from python_client import recognizer_pb2 as rec_pb2  # type: ignore
-from python_client import recognizer_pb2_grpc as rec_grpc  # type: ignore
-from python_client.rapeech.asr.v1 import result_pb2 as result_pb2  # type: ignore
+import recognizer_pb2 as rec_pb2  # type: ignore
+import recognizer_pb2_grpc as rec_grpc  # type: ignore
+from rapeech.asr.v1 import result_pb2 as result_pb2  # type: ignore
 
 
 def open_wav(path: Path):
@@ -271,4 +271,3 @@ if __name__ == '__main__':
         asyncio.run(run(build_argparser().parse_args()))
     except KeyboardInterrupt:
         pass
-
