@@ -61,12 +61,12 @@ class Program
         int? optSr = null;        // --sr 8000|16000
         int? optChunkMs = null;   // --chunk-ms N
         string? optResult = null; // --result final|partial|immutable
-        int tailMs = 1200;         // --tail-ms N (file mode)
+        int tailMs = 2000;         // --tail-ms N (file mode)
         float gain = 1.0f;        // --gain (file mode volume)
         string? optChannel = null; // --channel rx|tx
         bool verbose = false;      // --verbose
         bool burst = false;        // --burst (disable pacing)
-        int postWaitMs = 3000;     // --post-wait-ms N
+        int postWaitMs = 10000;     // --post-wait-ms N
         string? logPath = null;    // --log <path>
         bool noLog = false;        // --no-log
         if (args != null)
@@ -163,8 +163,10 @@ class Program
         {
             var candidates = new[]
             {
-                Path.Combine(AppContext.BaseDirectory, "test2.wav"),
-                Path.Combine(Directory.GetCurrentDirectory(), "test2.wav")
+                Path.Combine(AppContext.BaseDirectory, "11_12_Test1.pcm"),
+                Path.Combine(AppContext.BaseDirectory, "11_12_Test2.wav"),
+                Path.Combine(Directory.GetCurrentDirectory(), "11_12_Test1.pcm"),
+                Path.Combine(Directory.GetCurrentDirectory(), "11_12_Test2.wav")
             };
             foreach (var cand in candidates)
             {
@@ -386,25 +388,63 @@ class Program
                     await Task.Delay(50);
                 }
 
-                using var afr = new AudioFileReader(filePath);
-                ISampleProvider provider = afr; // 32-bit float samples
-                if (provider.WaveFormat.SampleRate != TARGET_SR)
-                    provider = new WdlResamplingSampleProvider(provider, ACTIVE_SR);
-                if (provider.WaveFormat.Channels == 2)
-                    provider = new StereoToMonoSampleProvider(provider) { LeftVolume = 0.5f, RightVolume = 0.5f };
-                if (Math.Abs(gain - 1.0f) > 0.01f)
-                    provider = new VolumeSampleProvider(provider) { Volume = gain };
-
-                var waveProvider = new SampleToWaveProvider16(provider); // mono 16-bit
-                var buf = new byte[ACTIVE_CHUNK_BYTES];
-                int read;
-                while ((read = waveProvider.Read(buf, 0, buf.Length)) > 0)
+                var ext = Path.GetExtension(filePath)?.ToLowerInvariant();
+                bool isPcm = string.Equals(ext, ".pcm", StringComparison.OrdinalIgnoreCase);
+                if (isPcm)
                 {
-                    var outBuf = new byte[read];
-                    Buffer.BlockCopy(buf, 0, outBuf, 0, read);
-                    if (!queue.IsAddingCompleted)
+                    Console.WriteLine("[File] Detected PCM (16-bit mono) source.");
+                    var pcmBytes = await File.ReadAllBytesAsync(filePath);
+                    if (pcmBytes.Length % 2 != 0)
+                        throw new InvalidOperationException("PCM file must contain 16-bit samples.");
+
+                    if (Math.Abs(gain - 1.0f) > 0.01f)
                     {
-                        try { queue.Add(outBuf); } catch { }
+                        var samples = new short[pcmBytes.Length / 2];
+                        Buffer.BlockCopy(pcmBytes, 0, samples, 0, pcmBytes.Length);
+                        for (int i = 0; i < samples.Length; i++)
+                        {
+                            var val = samples[i] / 32768f;
+                            val = Math.Clamp(val * gain, -1f, 1f);
+                            samples[i] = (short)(val * 32767f);
+                        }
+                        Buffer.BlockCopy(samples, 0, pcmBytes, 0, pcmBytes.Length);
+                    }
+
+                    int cursor = 0;
+                    while (cursor < pcmBytes.Length)
+                    {
+                        int chunkLen = Math.Min(ACTIVE_CHUNK_BYTES, pcmBytes.Length - cursor);
+                        var outBuf = new byte[chunkLen];
+                        Buffer.BlockCopy(pcmBytes, cursor, outBuf, 0, chunkLen);
+                        cursor += chunkLen;
+                        if (!queue.IsAddingCompleted)
+                        {
+                            try { queue.Add(outBuf); } catch { }
+                        }
+                    }
+                }
+                else
+                {
+                    using var afr = new AudioFileReader(filePath);
+                    ISampleProvider provider = afr; // 32-bit float samples
+                    if (provider.WaveFormat.SampleRate != TARGET_SR)
+                        provider = new WdlResamplingSampleProvider(provider, ACTIVE_SR);
+                    if (provider.WaveFormat.Channels == 2)
+                        provider = new StereoToMonoSampleProvider(provider) { LeftVolume = 0.5f, RightVolume = 0.5f };
+                    if (Math.Abs(gain - 1.0f) > 0.01f)
+                        provider = new VolumeSampleProvider(provider) { Volume = gain };
+
+                    var waveProvider = new SampleToWaveProvider16(provider); // mono 16-bit
+                    var buf = new byte[ACTIVE_CHUNK_BYTES];
+                    int read;
+                    while ((read = waveProvider.Read(buf, 0, buf.Length)) > 0)
+                    {
+                        var outBuf = new byte[read];
+                        Buffer.BlockCopy(buf, 0, outBuf, 0, read);
+                        if (!queue.IsAddingCompleted)
+                        {
+                            try { queue.Add(outBuf); } catch { }
+                        }
                     }
                 }
                 // Add tail silence to trigger VAD/finalization
