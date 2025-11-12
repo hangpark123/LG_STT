@@ -20,7 +20,7 @@ class Program
     // ===== 손대기 쉽게 모아둔 설정 =====
     const string ADDRESS = "http://nlb.aibot-dev.lguplus.co.kr:13000"; // TLS면 https://
     const int TARGET_SR = 8000;            // ★ 먼저 8000으로 테스트 → 필요시 16000으로 변경
-    const double CHUNK_SEC = 0.2;          // 200ms
+    const double CHUNK_SEC = 0.1;          // 100ms
     static int CHUNK_BYTES => (int)(TARGET_SR * CHUNK_SEC * 2);
     const int RECORD_SECONDS_TIMEOUT = 600;
 
@@ -188,6 +188,7 @@ class Program
 
         var client = new Recognizer.RecognizerClient(channel);
         using var call = client.Recognize(headers, deadline: DateTime.UtcNow.AddMinutes(15));
+        Console.WriteLine("Start streaming Recognize call...");
 
         string callId = Guid.NewGuid().ToString();
 
@@ -225,9 +226,11 @@ class Program
 
                 while (await call.ResponseStream.MoveNext(CancellationToken.None))
                 {
+                    Console.WriteLine("read response");
                     var resp = call.ResponseStream.Current;
                     if (resp.Status != null)
                     {
+                        Console.WriteLine("has_status");
                         Console.WriteLine($"[Status] code={resp.Status.StausCode} msg={resp.Status.Message} details={resp.Status.Details}");
                         if (resp.Status.StausCode == RpcStatusCode.Ok)
                         {
@@ -238,6 +241,7 @@ class Program
                     }
                     if (resp.Result != null)
                     {
+                        Console.WriteLine("has_result");
                         _lastResultAt = DateTime.UtcNow;
                         var json = Google.Protobuf.JsonFormatter.Default.Format(resp.Result);
                         Console.WriteLine($"[Result JSON]\n{json}");
@@ -317,11 +321,11 @@ class Program
             using var pending = new MemoryStream();
             long sentBytes = 0;
             var nextTick = DateTime.UtcNow;
+            int frameIndex = 0;
 
             foreach (var buf in queue.GetConsumingEnumerable())
             {
                 pending.Write(buf, 0, buf.Length);
-                PrintVu(buf);
 
                 while (pending.Length >= ACTIVE_CHUNK_BYTES)
                 {
@@ -344,6 +348,7 @@ class Program
 
                     if (_initOk)
                     {
+                        Console.WriteLine($"write audio (size={chunk.Length}, frame={frameIndex++})");
                         await call.RequestStream.WriteAsync(new RecognitionRequest
                         {
                             Audio = ByteString.CopyFrom(chunk)
@@ -728,21 +733,6 @@ class Program
     }
 
     // 간단 VU 미터
-    static void PrintVu(byte[] buf)
-    {
-        int samples = buf.Length / 2;
-        if (samples == 0) return;
-        long sum = 0;
-        for (int i = 0; i < samples; i++)
-        {
-            short s = (short)(buf[2 * i] | (buf[2 * i + 1] << 8));
-            sum += (long)s * s;
-        }
-        double rms = Math.Sqrt(sum / (double)samples) / 32768.0; // 0..1
-        int bars = (int)Math.Round(rms * 30);
-        Console.WriteLine($"[VU] {new string('#', Math.Min(bars, 30))}");
-    }
-
     // Console tee writer to duplicate output to a log file, filtering out [Tx] lines
     class TeeWriter : TextWriter
     {
