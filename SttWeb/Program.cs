@@ -12,6 +12,7 @@ using Microsoft.Extensions.Hosting;
 using Rapeech.Asr.V1;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
+using System.Diagnostics;
 
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
@@ -78,6 +79,8 @@ app.Map("/ws", async (HttpContext ctx) =>
     }
 
     Task feederTask;
+    Task rapeechTask;
+    Task whisperTask;
     if (!useFile)
     {
         // Reader: client microphone -> channel
@@ -120,95 +123,58 @@ app.Map("/ws", async (HttpContext ctx) =>
                 whisperChannel.Writer.TryComplete();
             }
         }, cancel);
+
+        rapeechTask = RapeechRunner(rapeechChannel.Reader, sampleRate, SendJsonAsync, cancel);
+        whisperTask = WhisperRunner(whisperChannel.Reader, sampleRate, SendJsonAsync, cancel);
     }
     else
     {
-        feederTask = Task.Run(async () =>
+        string ResolvePath(string candidate)
         {
-            string ResolvePath(string candidate)
-            {
-                if (string.IsNullOrWhiteSpace(candidate)) return candidate;
-                return Path.IsPathRooted(candidate) ? candidate : Path.GetFullPath(Path.Combine(app.Environment.ContentRootPath, candidate));
-            }
+            if (string.IsNullOrWhiteSpace(candidate)) return candidate;
+            return Path.IsPathRooted(candidate)
+                ? candidate
+                : Path.GetFullPath(Path.Combine(app.Environment.ContentRootPath, candidate));
+        }
 
-            string pcmPath, wavPath;
-            if (string.IsNullOrWhiteSpace(fileParam) || fileParam == "1")
+        string pcmPath, wavPath;
+        if (string.IsNullOrWhiteSpace(fileParam) || fileParam == "1")
+        {
+            var sampleDir = Path.Combine(app.Environment.ContentRootPath, "..", "python_client");
+            pcmPath = Path.Combine(sampleDir, "11_12_Test1.pcm");
+            wavPath = Path.Combine(sampleDir, "11_12_Test1.wav");
+        }
+        else
+        {
+            var resolved = ResolvePath(fileParam);
+            var ext = Path.GetExtension(resolved).ToLowerInvariant();
+            if (ext == ".pcm")
             {
-                var sampleDir = Path.Combine(app.Environment.ContentRootPath, "..", "python_client");
-                pcmPath = Path.Combine(sampleDir, "11_12_Test1.pcm");
-                wavPath = Path.Combine(sampleDir, "11_12_Test1.wav");
+                pcmPath = resolved;
+                wavPath = Path.ChangeExtension(resolved, ".wav");
+            }
+            else if (ext == ".wav")
+            {
+                wavPath = resolved;
+                pcmPath = Path.ChangeExtension(resolved, ".pcm");
             }
             else
             {
-                var resolved = ResolvePath(fileParam);
-                var ext = Path.GetExtension(resolved).ToLowerInvariant();
-                if (ext == ".pcm")
-                {
-                    pcmPath = resolved;
-                    wavPath = Path.ChangeExtension(resolved, ".wav");
-                }
-                else if (ext == ".wav")
-                {
-                    wavPath = resolved;
-                    pcmPath = Path.ChangeExtension(resolved, ".pcm");
-                }
-                else
-                {
-                    pcmPath = resolved + ".pcm";
-                    wavPath = resolved + ".wav";
-                }
+                pcmPath = resolved + ".pcm";
+                wavPath = resolved + ".wav";
             }
+        }
 
-            var lgTask = FeedPcmFileAsync(pcmPath, rapeechChannel.Writer, sampleRate, SendJsonAsync, cancel);
-            var whTask = FeedWavFileAsync(wavPath, whisperChannel.Writer, sampleRate, SendJsonAsync, cancel);
-            await Task.WhenAll(lgTask, whTask);
-        }, cancel);
+        feederTask = FeedWavFileAsync(wavPath, whisperChannel.Writer, sampleRate, SendJsonAsync, cancel);
+        whisperTask = WhisperRunner(whisperChannel.Reader, sampleRate, SendJsonAsync, cancel);
+        rapeechTask = RunPythonClientAsync(pcmPath, sampleRate, SendJsonAsync, cancel, app.Environment.ContentRootPath);
     }
-    // Kick off both backends
-    var rapeechTask = RapeechRunner(rapeechChannel.Reader, sampleRate, SendJsonAsync, cancel);
-    var whisperTask = WhisperRunner(whisperChannel.Reader, sampleRate, SendJsonAsync, cancel);
 
     try { await Task.WhenAll(feederTask, rapeechTask, whisperTask); }
     catch { /* swallow if client closed while tasks still running */ }
 });
 
 app.Run();
-
-static async Task FeedPcmFileAsync(string path, ChannelWriter<byte[]> writer, int sampleRate, Func<object, Task> send, CancellationToken cancel)
-{
-    try
-    {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-        {
-            await send(new { source = "rapeech", type = "error", error = $"PCM file not found: {path}" });
-            return;
-        }
-        var bytes = await File.ReadAllBytesAsync(path, cancel);
-        var chunkMs = 100;
-        var bytesPerMs = sampleRate * 2 / 1000;
-        var chunkBytes = Math.Max(bytesPerMs, chunkMs * bytesPerMs);
-        int cursor = 0;
-        while (cursor < bytes.Length && !cancel.IsCancellationRequested)
-        {
-            var len = Math.Min(chunkBytes, bytes.Length - cursor);
-            var chunk = new byte[len];
-            Buffer.BlockCopy(bytes, cursor, chunk, 0, len);
-            cursor += len;
-            await writer.WriteAsync(chunk, cancel);
-            await Task.Delay(chunkMs, cancel);
-        }
-    }
-    catch (OperationCanceledException) { }
-    catch (Exception ex)
-    {
-        Console.WriteLine("[PCM feeder] " + ex.Message);
-        await send(new { source = "rapeech", type = "error", error = ex.Message });
-    }
-    finally
-    {
-        writer.TryComplete();
-    }
-}
 
 static async Task FeedWavFileAsync(string path, ChannelWriter<byte[]> writer, int sampleRate, Func<object, Task> send, CancellationToken cancel)
 {
@@ -246,6 +212,104 @@ static async Task FeedWavFileAsync(string path, ChannelWriter<byte[]> writer, in
     finally
     {
         writer.TryComplete();
+    }
+}
+
+static async Task RunPythonClientAsync(string pcmPath, int sampleRate, Func<object, Task> send, CancellationToken cancel, string contentRoot)
+{
+    try
+    {
+        if (string.IsNullOrWhiteSpace(pcmPath) || !File.Exists(pcmPath))
+        {
+            await send(new { source = "rapeech", type = "error", error = $"PCM file not found: {pcmPath}" });
+            return;
+        }
+
+        var repoRoot = Path.GetFullPath(Path.Combine(contentRoot, ".."));
+        var scriptPath = Path.Combine(repoRoot, "python_client", "stt_client.py");
+        if (!File.Exists(scriptPath))
+        {
+            await send(new { source = "rapeech", type = "error", error = $"python_client/stt_client.py not found ({scriptPath})" });
+            return;
+        }
+
+        var pythonExe = Environment.GetEnvironmentVariable("PYTHON_CLIENT_EXE");
+        if (string.IsNullOrWhiteSpace(pythonExe))
+        {
+            var venvExe = Path.Combine(repoRoot, "python_client", ".venv", "Scripts", "python.exe");
+            pythonExe = File.Exists(venvExe) ? venvExe : "python";
+        }
+
+        var addr = Environment.GetEnvironmentVariable("RAPEECH_ADDRESS") ?? "http://nlb.aibot-dev.lguplus.co.kr:13000";
+        var args = $"\"{scriptPath}\" --target-server {addr} --source-file \"{pcmPath}\" --direction tx --mode rt --sample-rate {sampleRate} --chunk-term-ms 100";
+
+        var psi = new ProcessStartInfo(pythonExe, args)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(scriptPath)!
+        };
+
+        var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        proc.OutputDataReceived += (_, e) =>
+        {
+            if (string.IsNullOrWhiteSpace(e.Data)) return;
+            _ = HandlePythonLine(e.Data);
+        };
+        proc.ErrorDataReceived += (_, e) =>
+        {
+            if (string.IsNullOrWhiteSpace(e.Data)) return;
+            _ = send(new { source = "rapeech", type = "error", error = e.Data });
+        };
+        proc.Exited += (_, __) => tcs.TrySetResult();
+
+        proc.Start();
+        proc.BeginOutputReadLine();
+        proc.BeginErrorReadLine();
+
+        using (cancel.Register(() =>
+        {
+            try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+        }))
+        {
+            await tcs.Task;
+        }
+
+        if (proc.ExitCode != 0)
+        {
+            await send(new { source = "rapeech", type = "error", error = $"python_client exited with code {proc.ExitCode}" });
+        }
+
+        async Task HandlePythonLine(string line)
+        {
+            Console.WriteLine("[python lg] " + line);
+            if (line.StartsWith("[Result TEXT"))
+            {
+                var isFinal = line.Contains("(FINAL)");
+                var idx = line.IndexOf(':');
+                var text = idx >= 0 ? line[(idx + 1)..].Trim() : line.Trim();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    await send(new { source = "rapeech", type = isFinal ? "final" : "partial", text });
+                }
+            }
+            else if (line.StartsWith("[Status]"))
+            {
+                await send(new { source = "rapeech", type = "status", message = line });
+            }
+            else if (line.StartsWith("[Error]") || line.Contains("gRPC Error"))
+            {
+                await send(new { source = "rapeech", type = "error", error = line });
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        await send(new { source = "rapeech", type = "error", error = ex.Message });
     }
 }
 
