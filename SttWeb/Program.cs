@@ -251,6 +251,7 @@ static async Task RunPythonClientAsync(string pcmPath, int sampleRate, Func<obje
             CreateNoWindow = true,
             WorkingDirectory = Path.GetDirectoryName(scriptPath)!
         };
+        psi.Environment["PYTHONWARNINGS"] = "ignore";
 
         var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -263,6 +264,7 @@ static async Task RunPythonClientAsync(string pcmPath, int sampleRate, Func<obje
         proc.ErrorDataReceived += (_, e) =>
         {
             if (string.IsNullOrWhiteSpace(e.Data)) return;
+            if (e.Data.Contains("UserWarning")) return;
             _ = send(new { source = "rapeech", type = "error", error = e.Data });
         };
         proc.Exited += (_, __) => tcs.TrySetResult();
