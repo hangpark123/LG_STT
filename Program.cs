@@ -37,11 +37,11 @@ class Program
     const string TENANT_ID = "";           // "lguplus-b2b-dev"
 
     // Init data(map) ? 등록된 값과 반드시 동일하게
-    const string DATA_client        = "IRLink-Ivo";
+    const string DATA_client = "IRLink-Ivo";
     const string DATA_custom_number = "3002";
-    const string DATA_user_exten    = "2825";
-    const string DATA_channel_type  = "TX";   // ★ 로컬 마이크면 TX가 일반적
-    const string DATA_engine        = "IxiRecognizer";
+    const string DATA_user_exten = "2825";
+    const string DATA_channel_type = "TX";   // ★ 로컬 마이크면 TX가 일반적
+    const string DATA_engine = "IxiRecognizer";
 
     static readonly ResultType RESULT_TYPE = ResultType.Final;
     static readonly RecognitionType RECOG_TYPE = RecognitionType.Realtime;
@@ -82,32 +82,32 @@ class Program
                 }
                 if (string.Equals(a, "--sr", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (i + 1 < args.Length && int.TryParse(args[i+1], out var v)) { optSr = v; i++; }
+                    if (i + 1 < args.Length && int.TryParse(args[i + 1], out var v)) { optSr = v; i++; }
                     continue;
                 }
                 if (string.Equals(a, "--chunk-ms", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (i + 1 < args.Length && int.TryParse(args[i+1], out var v)) { optChunkMs = v; i++; }
+                    if (i + 1 < args.Length && int.TryParse(args[i + 1], out var v)) { optChunkMs = v; i++; }
                     continue;
                 }
                 if (string.Equals(a, "--result", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (i + 1 < args.Length) { optResult = args[i+1]; i++; }
+                    if (i + 1 < args.Length) { optResult = args[i + 1]; i++; }
                     continue;
                 }
                 if (string.Equals(a, "--tail-ms", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (i + 1 < args.Length && int.TryParse(args[i+1], out var v)) { tailMs = Math.Max(0, Math.Min(5000, v)); i++; }
+                    if (i + 1 < args.Length && int.TryParse(args[i + 1], out var v)) { tailMs = Math.Max(0, Math.Min(5000, v)); i++; }
                     continue;
                 }
                 if (string.Equals(a, "--gain", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (i + 1 < args.Length && float.TryParse(args[i+1], out var v)) { gain = Math.Max(0.1f, Math.Min(3.0f, v)); i++; }
+                    if (i + 1 < args.Length && float.TryParse(args[i + 1], out var v)) { gain = Math.Max(0.1f, Math.Min(3.0f, v)); i++; }
                     continue;
                 }
                 if (string.Equals(a, "--channel", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (i + 1 < args.Length) { optChannel = args[i+1]; i++; }
+                    if (i + 1 < args.Length) { optChannel = args[i + 1]; i++; }
                     continue;
                 }
                 if (string.Equals(a, "--verbose", StringComparison.OrdinalIgnoreCase))
@@ -120,12 +120,12 @@ class Program
                 }
                 if (string.Equals(a, "--post-wait-ms", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (i + 1 < args.Length && int.TryParse(args[i+1], out var v)) { postWaitMs = Math.Max(0, Math.Min(30000, v)); i++; }
+                    if (i + 1 < args.Length && int.TryParse(args[i + 1], out var v)) { postWaitMs = Math.Max(0, Math.Min(30000, v)); i++; }
                     continue;
                 }
                 if (string.Equals(a, "--log", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (i + 1 < args.Length) { logPath = args[i+1]; i++; }
+                    if (i + 1 < args.Length) { logPath = args[i + 1]; i++; }
                     continue;
                 }
                 if (string.Equals(a, "--no-log", StringComparison.OrdinalIgnoreCase))
@@ -158,13 +158,31 @@ class Program
             var c = optChannel.Trim().ToLowerInvariant();
             if (c == "rx") ACTIVE_CHANNEL_TYPE = ChannelType.Rx; else ACTIVE_CHANNEL_TYPE = ChannelType.Tx;
         }
-        Console.WriteLine($"[Config] SR={ACTIVE_SR}Hz, chunk={ACTIVE_CHUNK_SEC*1000:F0}ms, result={ACTIVE_RESULT_TYPE}, channel={ACTIVE_CHANNEL_TYPE}, tailMs={tailMs}, gain={gain:F1}{(filePath!=null?" (file)":" (mic)")}{(verbose?" verbose":"")}{(burst?" burst":"")}, postWaitMs={postWaitMs}");
+
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            var candidates = new[]
+            {
+                Path.Combine(AppContext.BaseDirectory, "test2.wav"),
+                Path.Combine(Directory.GetCurrentDirectory(), "test2.wav")
+            };
+            foreach (var cand in candidates)
+            {
+                if (File.Exists(cand))
+                {
+                    filePath = cand;
+                    Console.WriteLine($"[Info] No --file supplied. Defaulting to {filePath}.");
+                    break;
+                }
+            }
+        }
+        Console.WriteLine($"[Config] SR={ACTIVE_SR}Hz, chunk={ACTIVE_CHUNK_SEC * 1000:F0}ms, result={ACTIVE_RESULT_TYPE}, channel={ACTIVE_CHANNEL_TYPE}, tailMs={tailMs}, gain={gain:F1}{(filePath != null ? " (file)" : " (mic)")}{(verbose ? " verbose" : "")}{(burst ? " burst" : "")}, postWaitMs={postWaitMs}");
 
         using var channel = GrpcChannel.ForAddress(ADDRESS);
         var headers = new Metadata();
-        if (!string.IsNullOrWhiteSpace(AUTH_BEARER))       headers.Add("authorization", AUTH_BEARER);
+        if (!string.IsNullOrWhiteSpace(AUTH_BEARER)) headers.Add("authorization", AUTH_BEARER);
         if (!string.IsNullOrWhiteSpace(SESSION_POLICY_ID)) headers.Add("x-session-policy-id", SESSION_POLICY_ID);
-        if (!string.IsNullOrWhiteSpace(TENANT_ID))         headers.Add("x-tenant-id", TENANT_ID);
+        if (!string.IsNullOrWhiteSpace(TENANT_ID)) headers.Add("x-tenant-id", TENANT_ID);
 
         var client = new Recognizer.RecognizerClient(channel);
         using var call = client.Recognize(headers, deadline: DateTime.UtcNow.AddMinutes(15));
@@ -242,19 +260,19 @@ class Program
             {
                 Parameters = new RecognitionParameters
                 {
-                    AudioFormat     = new AudioFormat { Pcm = new PCM { SampleRateHz = (uint)ACTIVE_SR } },
+                    AudioFormat = new AudioFormat { Pcm = new PCM { SampleRateHz = (uint)ACTIVE_SR } },
                     RecognitionType = RECOG_TYPE,
-                    ResultType      = ACTIVE_RESULT_TYPE
+                    ResultType = ACTIVE_RESULT_TYPE
                 },
                 CallId = callId,
                 ChannelType = ACTIVE_CHANNEL_TYPE // ★ TX로 고정 (마이크)
             }
         };
-        initReq.RecognitionInitMessage.Data.Add("client",        DATA_client);
+        initReq.RecognitionInitMessage.Data.Add("client", DATA_client);
         initReq.RecognitionInitMessage.Data.Add("custom_number", DATA_custom_number);
-        initReq.RecognitionInitMessage.Data.Add("user_exten",    DATA_user_exten);
-        initReq.RecognitionInitMessage.Data.Add("channel_type",  DATA_channel_type);
-        initReq.RecognitionInitMessage.Data.Add("engine",        DATA_engine);
+        initReq.RecognitionInitMessage.Data.Add("user_exten", DATA_user_exten);
+        initReq.RecognitionInitMessage.Data.Add("channel_type", DATA_channel_type);
+        initReq.RecognitionInitMessage.Data.Add("engine", DATA_engine);
 
         await call.RequestStream.WriteAsync(initReq);
         Console.WriteLine($"[Init] sent. callId={callId}");
@@ -286,8 +304,6 @@ class Program
                 var idle = (DateTime.UtcNow - _lastResultAt).TotalSeconds;
                 if (_initOk && idle > 10)
                 {
-                    Console.WriteLine("[Warn] 10초간 인식 결과 없음 → RX/TX, 샘플레이트(8k/16k), policy/engine 값 점검. " +
-                                      "몇 초 이상 또박또박 말하고, 필요하면 F 키로 Final 강제 후 결과 확인.");
                     _lastResultAt = DateTime.UtcNow; // 중복 경고 억제
                 }
             }
@@ -354,7 +370,7 @@ class Program
                 sentBytes += last.Length;
             }
 
-            Console.WriteLine($"[Tx] total={(sentBytes/1024.0):F1} KB");
+            Console.WriteLine($"[Tx] total={(sentBytes / 1024.0):F1} KB");
         });
 
         // If file input mode is specified, stream file -> queue, then send End and finalize.
@@ -394,7 +410,7 @@ class Program
                 // Add tail silence to trigger VAD/finalization
                 if (tailMs > 0)
                 {
-                    int tailBytes = (int)(ACTIVE_SR * (tailMs/1000.0) * 2);
+                    int tailBytes = (int)(ACTIVE_SR * (tailMs / 1000.0) * 2);
                     int remaining = tailBytes;
                     while (remaining > 0)
                     {
@@ -451,11 +467,11 @@ class Program
         {
             try
             {
-                    waveIn = new WaveInEvent
-                    {
-                        WaveFormat = new WaveFormat(ACTIVE_SR, 16, 1),
-                        BufferMilliseconds = (int)(ACTIVE_CHUNK_SEC * 1000)
-                    };
+                waveIn = new WaveInEvent
+                {
+                    WaveFormat = new WaveFormat(ACTIVE_SR, 16, 1),
+                    BufferMilliseconds = (int)(ACTIVE_CHUNK_SEC * 1000)
+                };
                 waveIn.DataAvailable += (s, e) =>
                 {
                     if (!_initOk) return;
@@ -478,8 +494,8 @@ class Program
                 mm ??= enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia);
                 if (mm == null) throw new InvalidOperationException("녹음 장치를 찾을 수 없습니다.");
 
-                    wasapi = new WasapiCapture(mm, true);
-                    wasapi.WaveFormat = new WaveFormat(ACTIVE_SR, 16, 1);
+                wasapi = new WasapiCapture(mm, true);
+                wasapi.WaveFormat = new WaveFormat(ACTIVE_SR, 16, 1);
                 wasapi.DataAvailable += (s, e) =>
                 {
                     if (!_initOk) return;
@@ -581,11 +597,13 @@ class Program
                 {
                     isFinal = true;
                 }
-            } catch {}
+            }
+            catch { }
             var directText = t.GetProperty("Text")?.GetValue(resultMsg)?.ToString()
                           ?? t.GetProperty("Transcript")?.GetValue(resultMsg)?.ToString();
             if (!string.IsNullOrWhiteSpace(directText)) return directText;
-        } catch {}
+        }
+        catch { }
 
         // rapeech Result: Hypotheses[0].Text
         try
@@ -605,7 +623,8 @@ class Program
                     }
                 }
             }
-        } catch {}
+        }
+        catch { }
 
         try
         {
@@ -625,7 +644,8 @@ class Program
                     }
                 }
             }
-        } catch {}
+        }
+        catch { }
 
         try
         {
@@ -644,7 +664,8 @@ class Program
                 var joined = sb.ToString().Trim();
                 if (joined.Length > 0) return joined;
             }
-        } catch {}
+        }
+        catch { }
 
         try
         {
@@ -660,7 +681,8 @@ class Program
                     if (e > s) return json.Substring(s, e - s);
                 }
             }
-        } catch {}
+        }
+        catch { }
 
         return null;
     }
@@ -673,7 +695,7 @@ class Program
         long sum = 0;
         for (int i = 0; i < samples; i++)
         {
-            short s = (short)(buf[2*i] | (buf[2*i+1] << 8));
+            short s = (short)(buf[2 * i] | (buf[2 * i + 1] << 8));
             sum += (long)s * s;
         }
         double rms = Math.Sqrt(sum / (double)samples) / 32768.0; // 0..1
