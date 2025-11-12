@@ -718,10 +718,7 @@ class Program
         {
             _console.WriteLine(value);
             var line = value ?? string.Empty;
-            if (!line.StartsWith("[Tx]"))
-            {
-                _file.WriteLine(line);
-            }
+            _file.WriteLine(line);
         }
         public override void Write(char value)
         {
