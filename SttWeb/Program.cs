@@ -165,8 +165,8 @@ app.Map("/ws", async (HttpContext ctx) =>
         }, cancel);
     }
     // Kick off both backends
-    var rapeechTask = Task.Run(() => RapeechRunner(rapeechChannel.Reader, sampleRate, SendJsonAsync, cancel));
-    var whisperTask = Task.Run(() => WhisperRunner(whisperChannel.Reader, sampleRate, SendJsonAsync, cancel));
+    var rapeechTask = RapeechRunner(rapeechChannel.Reader, sampleRate, SendJsonAsync, cancel);
+    var whisperTask = WhisperRunner(whisperChannel.Reader, sampleRate, SendJsonAsync, cancel);
 
     try { await Task.WhenAll(feederTask, rapeechTask, whisperTask); }
     catch { /* swallow if client closed while tasks still running */ }
