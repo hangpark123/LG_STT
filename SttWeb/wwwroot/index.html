@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>STT 비교 (LG STT vs Whisper)</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --border: #334155;
+      --text: #e2e8f0;
+      --subtext: #94a3b8;
+      --accent-lg: #f97316;
+      --accent-whisper: #38bdf8;
+      --badge: #475569;
+    }
+    body {
+      margin: 0;
+      font-family: "Pretendard", "Noto Sans KR", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: radial-gradient(circle at top, #1e1b4b, #020617 60%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.6rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    button, select {
+      border: 1px solid var(--border);
+      background: #0f172a;
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: all .2s ease;
+    }
+    button:hover, select:hover { border-color: #64748b; }
+    .status {
+      flex: 1;
+      color: var(--subtext);
+      font-size: 0.9rem;
+      min-height: 24px;
+    }
+    .panels {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 25px 60px rgba(2,6,23,0.4);
+      min-height: 320px;
+      display: flex;
+      flex-direction: column;
+    }
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .panel-head h2 {
+      margin: 0;
+      font-size: 1.2rem;
+      letter-spacing: -0.02em;
+    }
+    .count-chip {
+      font-size: 0.85rem;
+      color: var(--subtext);
+    }
+    .timeline {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .entry {
+      border: 1px solid rgba(148,163,184,0.2);
+      border-radius: 10px;
+      padding: 12px;
+      background: rgba(15,23,42,0.6);
+      animation: fadeIn .25s ease;
+    }
+    .entry.final { border-color: #22c55e55; }
+    .entry.partial { border-color: rgba(96,165,250,0.4); }
+    .entry.error { border-color: #f87171; }
+    .entry-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.78rem;
+      color: var(--subtext);
+      margin-bottom: 6px;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--badge);
+      font-weight: 600;
+      letter-spacing: .04em;
+    }
+    .entry.final .badge { background: rgba(34,197,94,.2); color: #4ade80; }
+    .entry.partial .badge { background: rgba(59,130,246,.2); color: #60a5fa; }
+    .entry.error .badge { background: rgba(248,113,113,.2); color: #f87171; }
+    .entry-text { line-height: 1.5; white-space: pre-wrap; }
+    .controls { display:flex; gap:8px; flex-wrap:wrap; }
+    @keyframes fadeIn { from {opacity:0; transform:translateY(6px);} to{opacity:1; transform:translateY(0);} }
+    @media (max-width:600px) { body { padding: 16px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>STT 비교 (LG STT vs Whisper)</h1>
+  </header>
+
+  <div class="controls">
+    <button id="btn">마이크 스트림 시작</button>
+    <button id="btnFile">샘플 파일 재생</button>
+    <button id="btnClear">로그 초기화</button>
+    <label>샘플레이트:
+      <select id="sr">
+        <option value="16000" selected>16 kHz</option>
+        <option value="8000">8 kHz</option>
+      </select>
+    </label>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="panels" style="margin-top:20px;">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>LG STT</h2>
+        <div class="count-chip"><span id="rapeechFinalCount">0</span> final / <span id="rapeechPartialCount">0</span> partial</div>
+      </div>
+      <div class="timeline" id="rapeechTimeline"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Whisper</h2>
+        <div class="count-chip"><span id="whisperFinalCount">0</span> final / <span id="whisperPartialCount">0</span> partial</div>
+      </div>
+      <div class="timeline" id="whisperTimeline"></div>
+    </section>
+  </div>
+
+  <script>
+const btn = document.getElementById('btn');
+const btnFile = document.getElementById('btnFile');
+const btnClear = document.getElementById('btnClear');
+const statusEl = document.getElementById('status');
+const srSel = document.getElementById('sr');
+const rapeechTimeline = document.getElementById('rapeechTimeline');
+const whisperTimeline = document.getElementById('whisperTimeline');
+const rapeechFinalCount = document.getElementById('rapeechFinalCount');
+const rapeechPartialCount = document.getElementById('rapeechPartialCount');
+const whisperFinalCount = document.getElementById('whisperFinalCount');
+const whisperPartialCount = document.getElementById('whisperPartialCount');
+
+let ws, audioCtx, processor, source;
+let running = false;
+const state = { rapeech: [], whisper: [] };
+
+btn.addEventListener('click', async () => {
+  if (running) { stop(); return; }
+  await startMic();
+});
+
+btnFile.addEventListener('click', async () => {
+  if (running) stop();
+  await startFile();
+});
+
+btnClear.addEventListener('click', () => {
+  state.rapeech = [];
+  state.whisper = [];
+  renderTimeline('rapeech');
+  renderTimeline('whisper');
+});
+
+function logStatus(msg) { statusEl.textContent = msg; }
+
+function wsUrl(extra = '') {
+  const base = location.origin.replace('http', 'ws');
+  return `${base}/ws?sr=${srSel.value}${extra}`;
+}
+
+async function startFile() {
+  try {
+    const url = wsUrl('&file=1');
+    openSocket(url);
+    running = true;
+    btn.textContent = '스트림 중지';
+  } catch (e) {
+    logStatus('파일 모드 오류: ' + (e.message || e));
+  }
+}
+
+async function startMic() {
+  try {
+    const url = wsUrl();
+    openSocket(url);
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video:false });
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    source = audioCtx.createMediaStreamSource(stream);
+    const workSize = 2048;
+    processor = audioCtx.createScriptProcessor(workSize, 1, 1);
+    const inputSr = audioCtx.sampleRate;
+
+    processor.onaudioprocess = (ev) => {
+      const input = ev.inputBuffer.getChannelData(0);
+      const down = resample(input, inputSr, parseInt(srSel.value, 10));
+      const pcm16 = floatTo16BitPCM(down);
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm16);
+    };
+    source.connect(processor);
+    processor.connect(audioCtx.destination);
+
+    running = true;
+    btn.textContent = '스트림 중지';
+  } catch (e) {
+    logStatus('마이크 오류: ' + (e.message || e));
+  }
+}
+
+function stop() {
+  try {
+    if (processor) processor.disconnect();
+    if (source) source.disconnect();
+    if (audioCtx) audioCtx.close();
+    if (ws) ws.close();
+  } catch {}
+  running = false;
+  btn.textContent = '마이크 스트림 시작';
+}
+
+function openSocket(url) {
+  ws = new WebSocket(url);
+  ws.onopen = () => logStatus('WebSocket 연결됨');
+  ws.onclose = () => { running = false; btn.textContent = '마이크 스트림 시작'; logStatus('연결 종료'); };
+  ws.onerror = () => logStatus('WebSocket 오류');
+  ws.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      handleMessage(msg);
+    } catch {}
+  };
+  state.rapeech = [];
+  state.whisper = [];
+  renderTimeline('rapeech');
+  renderTimeline('whisper');
+}
+
+function handleMessage(msg) {
+  const src = msg.source === 'whisper' ? 'whisper' : 'rapeech';
+  const arr = state[src];
+  if (msg.type === 'status') {
+    arr.push({ type: 'status', text: msg.message || msg.code || '', ts: new Date() });
+  } else if (msg.type === 'error') {
+    arr.push({ type: 'error', text: msg.error || msg.detail || '', ts: new Date() });
+  } else {
+    const text = (msg.text || '').trim();
+    if (!text) return;
+    arr.push({
+      type: msg.type,
+      text,
+      startMs: msg.startMs ?? null,
+      endMs: msg.endMs ?? null,
+      ts: new Date()
+    });
+  }
+  renderTimeline(src);
+}
+
+function renderTimeline(source) {
+  const list = state[source];
+  const panel = source === 'rapeech' ? rapeechTimeline : whisperTimeline;
+  panel.innerHTML = list.map(item => renderEntry(item)).join('');
+  const finalCount = list.filter(x => x.type === 'final').length;
+  const partialCount = list.filter(x => x.type === 'partial').length;
+  if (source === 'rapeech') {
+    rapeechFinalCount.textContent = finalCount;
+    rapeechPartialCount.textContent = partialCount;
+  } else {
+    whisperFinalCount.textContent = finalCount;
+    whisperPartialCount.textContent = partialCount;
+  }
+  panel.scrollTop = panel.scrollHeight;
+}
+
+function renderEntry(item) {
+  const cls = `entry ${item.type || 'status'}`;
+  const badgeText = (item.type || 'log').toUpperCase();
+  const timeLabel = formatRange(item.startMs, item.endMs);
+  const text = item.text || '';
+  return `
+    <div class="${cls}">
+      <div class="entry-meta">
+        <span class="badge">${badgeText}</span>
+        <span>${timeLabel}</span>
+      </div>
+      <div class="entry-text">${escapeHtml(text)}</div>
+    </div>
+  `;
+}
+
+function formatRange(startMs, endMs) {
+  if (typeof startMs !== 'number' || typeof endMs !== 'number') return '';
+  const s = (startMs / 1000).toFixed(1);
+  const e = (endMs / 1000).toFixed(1);
+  return `${s}s → ${e}s`;
+}
+
+function resample(input, inRate, outRate) {
+  if (inRate === outRate) return input;
+  const ratio = inRate / outRate;
+  const outLen = Math.round(input.length / ratio);
+  const out = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const idx = i * ratio;
+    const i0 = Math.floor(idx);
+    const i1 = Math.min(i0 + 1, input.length - 1);
+    const frac = idx - i0;
+    out[i] = input[i0] * (1 - frac) + input[i1] * frac;
+  }
+  return out;
+}
+
+function floatTo16BitPCM(float32) {
+  const buf = new ArrayBuffer(float32.length * 2);
+  const view = new DataView(buf);
+  for (let i = 0; i < float32.length; i++) {
+    let s = Math.max(-1, Math.min(1, float32[i]));
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return buf;
+}
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+  </script>
+</body>
+</html>
