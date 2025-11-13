@@ -90,18 +90,3 @@ python stt_client.py --target-server ... --source-file test.pcm ...
 ```
 
 Web UI와 연동하려면 `--ws-url ws://localhost:5000/lg-feed --ws-session <복사한 세션 ID>` 옵션을 추가하세요.
-
----
-
-## FAQ
-
-- **버튼을 누르지 않았는데 Whisper가 실행된다?**  
-  현재 버전은 재생 버튼을 눌러야만 Whisper/ LG STT 스트림이 시작됩니다. UI에서 “재생 시작”을 누르기 전에는 호출이 발생하지 않습니다.
-
-- **LG STT 로그가 안 보인다**  
-  compare_web 서버가 gRPC 클라이언트를 직접 돌립니다. 샘플레이트를 8 kHz로 바꾸거나, 서버 콘솔 로그에서 주소/인증 오류가 없는지 확인하세요.
-
-- **Whisper 문장이 너무 짧다**  
-  `PCM_FLUSH_MS`와 `PCM_OVERLAP_MS` 환경 변수를 늘리면 더 긴 문장이 한 번에 나옵니다 (예: 4000 / 500).
-
-필요한 기능이나 문제가 있으면 `compare_web/server.py` 또는 `SttWeb/Program.cs` 설정을 조정하거나 issue로 알려 주세요.
