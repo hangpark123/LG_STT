@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LG STT vs Whisper 비교</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: "Pretendard", "Noto Sans KR", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      --panel-bg: #0f172a;
+      --panel-border: #1e293b;
+      --bg: #020817;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at top, #1d1b4b 0%, #020817 70%);
+      color: var(--text);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    header {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    header h1 { margin: 0; font-size: 1.8rem; }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+    label {
+      display: flex;
+      flex-direction: column;
+      font-size: 0.9rem;
+      gap: 4px;
+    }
+    select, button {
+      border-radius: 8px;
+      border: 1px solid var(--panel-border);
+      background: rgba(15, 23, 42, 0.8);
+      color: var(--text);
+      padding: 8px 12px;
+      font-size: 0.95rem;
+    }
+    button.primary {
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.15);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .status {
+      margin-left: auto;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .session-box {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 0.9rem;
+    }
+    .session-box code {
+      background: rgba(15, 23, 42, 0.9);
+      padding: 4px 6px;
+      border-radius: 6px;
+    }
+    .panels {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 16px;
+    }
+    .panel {
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: 16px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 320px;
+    }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .panel-header h2 {
+      margin: 0;
+      color: var(--text);
+    }
+    .timeline {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .entry {
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: rgba(15, 23, 42, 0.7);
+    }
+    .entry.final { border-color: #34d399; }
+    .entry.partial { border-color: #fbbf24; }
+    .entry.error { border-color: #f87171; }
+    .entry-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>LG STT vs Whisper 비교</h1>
+    <div class="controls">
+      <label>음원샘플
+        <select id="sampleSelect"></select>
+      </label>
+      <label>샘플레이트
+        <select id="sr">
+          <option value="8000">8 kHz</option>
+          <option value="16000">16 kHz</option>
+        </select>
+      </label>
+      <button id="btnStart" class="primary">재생 시작</button>
+      <button id="btnStop" disabled>중지</button>
+      <button id="btnClear">로그 초기화</button>
+      <div class="status" id="status">준비됨</div>
+    </div>
+    <div class="session-box">
+      <div>Session ID: <code id="sessionId">-</code></div>
+      <div style="margin-top:6px;">python:
+        <code id="pythonCmd">python stt_client.py ...</code>
+      </div>
+    </div>
+  </header>
+
+  <div class="panels">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>LG STT</h2>
+        <span>Final <strong id="rapeechFinal">0</strong> · Partial <strong id="rapeechPartial">0</strong></span>
+      </div>
+      <div class="timeline" id="rapeechTimeline"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Whisper</h2>
+        <span>Final <strong id="whisperFinal">0</strong> · Partial <strong id="whisperPartial">0</strong></span>
+      </div>
+      <div class="timeline" id="whisperTimeline"></div>
+    </div>
+  </div>
+
+  <script>
+  (() => {
+    const statusEl = document.getElementById('status');
+    const sessionEl = document.getElementById('sessionId');
+    const cmdEl = document.getElementById('pythonCmd');
+    const sampleSelect = document.getElementById('sampleSelect');
+    const srSel = document.getElementById('sr');
+    const rapeechTimeline = document.getElementById('rapeechTimeline');
+    const whisperTimeline = document.getElementById('whisperTimeline');
+    const rapeechFinal = document.getElementById('rapeechFinal');
+    const rapeechPartial = document.getElementById('rapeechPartial');
+    const whisperFinal = document.getElementById('whisperFinal');
+    const whisperPartial = document.getElementById('whisperPartial');
+    const btnStart = document.getElementById('btnStart');
+    const btnStop = document.getElementById('btnStop');
+    const btnClear = document.getElementById('btnClear');
+
+    const wsBase = location.origin.replace(/^http/, 'ws');
+    let ws = null;
+    let sessionId = null;
+    let samples = [];
+    let isRunning = false;
+    let currentSample = null;
+    let currentSr = srSel.value;
+    const state = { rapeech: [], whisper: [] };
+
+    fetchSamples().catch(err => {
+      console.error(err);
+      logStatus('PCM 목록을 불러오지 못했습니다.');
+    });
+
+    btnStart.addEventListener('click', () => {
+      if (isRunning) return;
+      openSession();
+    });
+    btnStop.addEventListener('click', () => closeSession());
+    btnClear.addEventListener('click', () => {
+      state.rapeech = [];
+      state.whisper = [];
+      renderTimeline('rapeech');
+      renderTimeline('whisper');
+    });
+
+    async function fetchSamples() {
+      const resp = await fetch('/api/samples');
+      if (!resp.ok) throw new Error('sample fetch failed');
+      const data = await resp.json();
+      samples = data.items || [];
+      sampleSelect.innerHTML = samples.map(item => `
+        <option value="${item.id}" data-command="${item.command}">${item.label}</option>
+      `).join('');
+      if (data.default) sampleSelect.value = data.default;
+      logStatus('PCM 목록이 준비되었습니다.');
+    }
+
+    function openSession() {
+      closeSession();
+      const sample = sampleSelect.value;
+      if (!sample) {
+        logStatus('PCM 파일을 선택하세요.');
+        return;
+      }
+      currentSample = sample;
+      currentSr = srSel.value;
+      const url = `${wsBase}/ws?sr=${currentSr}`;
+      ws = new WebSocket(url);
+      ws.onopen = () => {
+        logStatus('WebSocket 연결됨');
+        state.rapeech = [];
+        state.whisper = [];
+        renderTimeline('rapeech');
+        renderTimeline('whisper');
+        sendStart(currentSample, currentSr);
+        isRunning = true;
+        btnStart.disabled = true;
+        btnStop.disabled = false;
+        sampleSelect.disabled = true;
+      };
+      ws.onclose = () => {
+        logStatus('연결 종료');
+        ws = null;
+        resetControls();
+      };
+      ws.onerror = () => logStatus('WebSocket 오류');
+      ws.onmessage = evt => {
+        try {
+          handleMessage(JSON.parse(evt.data));
+        } catch (e) {
+          console.error('invalid payload', e);
+        }
+      };
+    }
+
+    function closeSession() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ op: 'stop' })); } catch (e) {}
+      }
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+      resetControls();
+      sessionId = null;
+      sessionEl.textContent = '-';
+      cmdEl.textContent = 'python stt_client.py ...';
+      logStatus('세션이 종료되었습니다.');
+    }
+
+    function resetControls() {
+      isRunning = false;
+      btnStart.disabled = false;
+      btnStop.disabled = true;
+      sampleSelect.disabled = false;
+    }
+
+    function sendStart(sample, sr) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({
+        op: 'start',
+        file: sample,
+        sr: parseInt(sr, 10)
+      }));
+    }
+
+    function handleMessage(msg) {
+      if (msg.type === 'session') {
+        sessionId = msg.sessionId;
+        sessionEl.textContent = sessionId;
+        cmdEl.textContent = buildCommand();
+        return;
+      }
+      const source = msg.source === 'whisper' ? 'whisper' : 'rapeech';
+      const speaker = msg.speaker || (source === 'whisper' ? 'mono' : 'mono');
+      const bucket = state[source];
+      const text = extractText(msg);
+      if (!text && (msg.type === 'partial' || msg.type === 'final')) return;
+      bucket.push({
+        type: msg.type || 'info',
+        text: text || '',
+        startMs: typeof msg.startMs === 'number' ? msg.startMs : null,
+        endMs: typeof msg.endMs === 'number' ? msg.endMs : null,
+        ts: new Date(),
+        speaker
+      });
+      renderTimeline(source);
+    }
+
+    function buildCommand() {
+      if (!sessionId) return 'python stt_client.py ...';
+      const option = sampleSelect.selectedOptions[0];
+      const pcm = option ? option.dataset.command : 'your.pcm';
+      const base = `${wsBase}/lg-feed`;
+      return `python stt_client.py --target-server nlb.aibot-dev.lguplus.co.kr:13000 ` +
+        `--source-file "${pcm}" --direction tx --mode rt --sample-rate ${srSel.value} ` +
+        `--chunk-term-ms 100 --ws-url ${base} --ws-session ${sessionId}`;
+    }
+
+    function renderTimeline(source) {
+      const data = state[source];
+      const panel = source === 'rapeech' ? rapeechTimeline : whisperTimeline;
+      panel.innerHTML = data.map(item => renderEntry(item)).join('');
+      const finalCnt = data.filter(x => x.type === 'final').length;
+      const partialCnt = data.filter(x => x.type === 'partial').length;
+      if (source === 'rapeech') {
+        rapeechFinal.textContent = finalCnt;
+        rapeechPartial.textContent = partialCnt;
+      } else {
+        whisperFinal.textContent = finalCnt;
+        whisperPartial.textContent = partialCnt;
+      }
+      panel.scrollTop = panel.scrollHeight;
+    }
+
+    function renderEntry(item) {
+      const cls = `entry ${item.type || 'info'}`;
+      const meta = formatRange(item.startMs, item.endMs) || formatClock(item.ts);
+      const speakerTag = item.speaker ? `[${item.speaker.toUpperCase()}] ` : '';
+      return `
+        <div class="${cls}">
+          <div class="entry-meta">
+            <span>${(item.type || 'info').toUpperCase()}</span>
+            <span>${meta}</span>
+          </div>
+          <div>${speakerTag}${escapeHtml(item.text)}</div>
+        </div>
+      `;
+    }
+
+    function formatRange(a, b) {
+      if (typeof a !== 'number' || typeof b !== 'number') return '';
+      return `${(a / 1000).toFixed(1)}s ~ ${(b / 1000).toFixed(1)}s`;
+    }
+
+    function formatClock(date) {
+      if (!(date instanceof Date)) return '';
+      return date.toLocaleTimeString('ko-KR', { hour12: false });
+    }
+
+    function extractText(msg) {
+      return (msg.text || msg.message || msg.error || msg.detail || '').trim();
+    }
+
+    function logStatus(msg) {
+      statusEl.textContent = msg;
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>"']/g, c => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[c]));
+    }
+  })();
+  </script>
+</body>
+</html>

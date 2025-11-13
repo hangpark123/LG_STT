@@ -33,3 +33,12 @@ _ReSharper*/
 *.swp
 *.tmp
 
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+.env

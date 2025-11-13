@@ -4,12 +4,18 @@ import os
 import sys
 import time
 import uuid
+from typing import Optional
 
 import grpc
 
 import recognizer_pb2 as rec_pb2  # type: ignore
 import recognizer_pb2_grpc as rec_grpc  # type: ignore
 from rapeech.asr.v1 import result_pb2  # type: ignore
+
+try:
+    import websocket  # type: ignore
+except ImportError:
+    websocket = None
 
 
 def parse_args():
@@ -27,10 +33,14 @@ def parse_args():
                         help="Optional metadata JSON path (defaults to <direction>.json if omitted)")
     parser.add_argument("--log", type=str, default="",
                         help="Optional log file path")
+    parser.add_argument("--ws-url", type=str, default="",
+                        help="Optional WebSocket endpoint to push live events (e.g. ws://localhost:5000/lg-feed)")
+    parser.add_argument("--ws-session", type=str, default="",
+                        help="Session id used by the Web UI when --ws-url is specified")
     return parser.parse_args()
 
 
-def load_metadata(direction: str, json_path: str | None):
+def load_metadata(direction: str, json_path: Optional[str]):
     path = json_path or f"{direction}.json"
     data = {}
     if os.path.exists(path):
@@ -102,14 +112,51 @@ def main():
             log_fp.write(line + "\n")
             log_fp.flush()
 
+    ws_conn = None
+
+    if args.ws_url:
+        if websocket is None:
+            log("[WS] websocket-client 패키지가 없어 실시간 전송을 비활성화합니다.")
+        else:
+            target = args.ws_url
+            if args.ws_session:
+                target += ("&" if "?" in target else "?") + f"session={args.ws_session}"
+            try:
+                ws_conn = websocket.create_connection(target, timeout=5)
+                log(f"[WS] connected to {target}")
+            except Exception as exc:
+                log(f"[WS] connection failed: {exc}")
+                ws_conn = None
+
+    def emit(payload: dict):
+        nonlocal ws_conn
+        if ws_conn is None:
+            return
+        try:
+            ws_conn.send(json.dumps(payload, ensure_ascii=False))
+        except Exception as exc:
+            print(f"[WS error] {exc}")
+            try:
+                ws_conn.close()
+            except Exception:
+                pass
+            ws_conn = None
+
     channel = grpc.insecure_channel(args.target_server)
     try:
         grpc.channel_ready_future(channel).result(timeout=10)
         log("Channel state: GRPC_CHANNEL_READY")
+        emit({"source": "rapeech", "type": "status", "message": "Channel state: GRPC_CHANNEL_READY"})
     except grpc.FutureTimeoutError:
         log("Channel not ready, exit.")
+        emit({"source": "rapeech", "type": "error", "error": "Channel not ready"})
         if log_fp:
             log_fp.close()
+        if ws_conn:
+            try:
+                ws_conn.close()
+            except Exception:
+                pass
         return
 
     stub = rec_grpc.RecognizerStub(channel)
@@ -127,21 +174,41 @@ def main():
             log("read response")
             if resp.HasField("status"):
                 log(f"has_status ({resp.status.staus_code})")
+                emit({
+                    "source": "rapeech",
+                    "type": "status",
+                    "code": int(resp.status.staus_code),
+                    "message": resp.status.message or ""
+                })
                 if resp.status.staus_code != rec_pb2.StatusCode.OK:
                     break
             if resp.HasField("result"):
                 log("has_result")
                 if resp.result.hypotheses:
-                    for idx, hyp in enumerate(resp.result.hypotheses):
-                        log(f"hypothesis[{idx}]: {hyp.text}")
+                    hyp = resp.result.hypotheses[0]
+                    log(f"hypothesis[0]: {hyp.text}")
+                    emit({
+                        "source": "rapeech",
+                        "type": "final" if resp.result.result_type == result_pb2.ResultType.FINAL else "partial",
+                        "text": hyp.text,
+                        "startMs": getattr(resp.result, "abs_start_ms", None),
+                        "endMs": getattr(resp.result, "abs_end_ms", None)
+                    })
                 else:
                     log("result has no hypothesis")
     except grpc.RpcError as exc:
         log(f"RPC Error: {exc}")
+        emit({"source": "rapeech", "type": "error", "error": str(exc)})
 
     log("Finish")
+    emit({"source": "rapeech", "type": "info", "text": "Finish"})
     if log_fp:
         log_fp.close()
+    if ws_conn:
+        try:
+            ws_conn.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
