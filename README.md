@@ -62,7 +62,7 @@ python server.py   # 기본 포트 5000
 
 ---
 
-## 3. SttWeb (C# 비교 앱)
+## 3. SttWeb (LG STT vs Whisper basic)
 
 ```powershell
 dotnet run --project SttWeb
