@@ -22,6 +22,10 @@ PCM_DEFAULT_SR = int(os.getenv("PCM_SAMPLE_RATE", "8000"))
 CHUNK_MS = int(os.getenv("PCM_CHUNK_MS", "100"))
 FLUSH_MS = int(os.getenv("PCM_FLUSH_MS", "7000"))
 OVERLAP_MS = int(os.getenv("PCM_OVERLAP_MS", "1200"))
+GAP_MS = int(os.getenv("PCM_GAP_MS", "1500"))
+MERGE_MAX_MS = int(os.getenv("PCM_MERGE_MAX_MS", "20000"))
+SILENCE_THRESHOLD = float(os.getenv("PCM_SILENCE_THRESHOLD", "250"))
+SILENCE_RELEASE_MS = int(os.getenv("PCM_SILENCE_RELEASE_MS", "1500"))
 LG_ADDRESS = os.getenv("LG_GRPC_ADDRESS", "nlb.aibot-dev.lguplus.co.kr:13000")
 LG_DEFAULT_CHANNEL = os.getenv("LG_CHANNEL_TYPE", "TX").upper()
 CHANNEL_NAME_ORDER = ["tx", "rx", "ch3", "ch4", "ch5", "ch6", "ch7", "ch8"]
@@ -68,6 +72,52 @@ def map_channel_names(count: int) -> List[str]:
         else:
             names.append(f"ch{idx + 1}")
     return names
+
+
+def chunk_is_silence(chunk: bytes) -> bool:
+    if not chunk:
+        return True
+    arr = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+    if arr.size == 0:
+        return True
+    rms = float(np.sqrt(np.mean(arr * arr)))
+    return rms < SILENCE_THRESHOLD
+
+
+def reset_speaker_state(state: Dict[str, object]) -> None:
+    state["segments"] = []
+    state["current_start"] = None
+    state["last_end_text"] = None
+    state["last_partial_chunk"] = ""
+
+
+async def flush_speaker_segments(
+    speaker: str,
+    state: Dict[str, object],
+    send: SendFunc,
+    detail: str,
+    fallback_end: float | None = None,
+) -> None:
+    segments = state.get("segments") or []
+    current_start = state.get("current_start")
+    if not segments or current_start is None:
+        reset_speaker_state(state)
+        return
+    text = " ".join(segments).strip()
+    if not text:
+        reset_speaker_state(state)
+        return
+    end_ms = state.get("last_end_text", fallback_end if fallback_end is not None else current_start)
+    await send({
+        "source": "whisper",
+        "speaker": speaker,
+        "type": "final",
+        "text": text,
+        "detail": detail,
+        "startMs": int(current_start),
+        "endMs": int(end_ms),
+    })
+    reset_speaker_state(state)
 
 
 def discover_samples() -> Dict[str, Dict[str, object]]:
@@ -330,39 +380,104 @@ async def whisper_worker(speaker, pcm_bytes, sample_rate, send, stop_event: asyn
     overlap_bytes = max(0, bytes_per_ms * OVERLAP_MS)
     buffer = bytearray()
     seq = 0
-    aggregate: List[str] = []
+    speaker_state = {
+        "segments": [],
+        "current_start": None,
+        "last_end_text": None,
+        "last_partial_chunk": "",
+    }
     timeout = ClientTimeout(total=60)
-    elapsed_ms = 0.0
-    keep_ms = OVERLAP_MS
     total_len = len(pcm_bytes)
     idx = 0
+    current_time_ms = 0.0
+    segment_start_ms: float | None = None
+    speech_active = False
+    silence_ms = 0.0
+
     async with ClientSession(timeout=timeout) as client:
         try:
             while idx < total_len and not stop_event.is_set():
                 chunk = pcm_bytes[idx: idx + chunk_bytes]
                 idx += chunk_bytes
+                if not chunk:
+                    break
+                chunk_ms = len(chunk) / bytes_per_ms
+                chunk_start_ms = current_time_ms
+                current_time_ms += chunk_ms
+                silent = chunk_is_silence(chunk)
+
+                if not speech_active and silent:
+                    continue
+
+                if not speech_active and not silent:
+                    speech_active = True
+                    segment_start_ms = chunk_start_ms
+                    buffer = bytearray()
+                    silence_ms = 0.0
+
                 buffer.extend(chunk)
-                if len(buffer) >= flush_bytes:
+                if silent:
+                    silence_ms += chunk_ms
+                else:
+                    silence_ms = 0.0
+
+                while speech_active and len(buffer) >= flush_bytes and not stop_event.is_set():
                     seq += 1
-                    chunk_ms = len(buffer) / bytes_per_ms
-                    start_ms = elapsed_ms
-                    end_ms = start_ms + chunk_ms
-                    await send_whisper_chunk(
-                        client, buffer, sample_rate, send, False, seq, aggregate, start_ms, end_ms, speaker
+                    buffer_len = len(buffer)
+                    start_ms = segment_start_ms if segment_start_ms is not None else max(
+                        0.0, current_time_ms - buffer_len / bytes_per_ms
                     )
-                    if overlap_bytes > 0 and len(buffer) > overlap_bytes:
-                        elapsed_ms += max(0.0, chunk_ms - keep_ms)
-                        buffer = bytearray(buffer[-overlap_bytes:])
+                    end_ms = start_ms + buffer_len / bytes_per_ms
+                    await send_whisper_chunk(
+                        client, buffer, sample_rate, send, False, seq, speaker_state, start_ms, end_ms, speaker
+                    )
+                    if overlap_bytes > 0 and buffer_len > overlap_bytes:
+                        tail = buffer[-overlap_bytes:]
+                        buffer = bytearray(tail)
+                        segment_start_ms = end_ms - (len(buffer) / bytes_per_ms)
                     else:
-                        elapsed_ms += chunk_ms
                         buffer = bytearray()
-            if buffer and not stop_event.is_set():
+                        segment_start_ms = None
+                        break
+                    silence_ms = 0.0
+
+                if speech_active and silence_ms >= SILENCE_RELEASE_MS and not stop_event.is_set():
+                    if buffer:
+                        seq += 1
+                        buffer_len = len(buffer)
+                        start_ms = segment_start_ms if segment_start_ms is not None else max(
+                            0.0, current_time_ms - buffer_len / bytes_per_ms
+                        )
+                        end_ms = start_ms + buffer_len / bytes_per_ms
+                        await send_whisper_chunk(
+                            client, buffer, sample_rate, send, True, seq, speaker_state, start_ms, end_ms, speaker
+                        )
+                    buffer = bytearray()
+                    speech_active = False
+                    segment_start_ms = None
+                    silence_ms = 0.0
+
+            if buffer and speech_active and not stop_event.is_set():
                 seq += 1
-                chunk_ms = len(buffer) / bytes_per_ms
-                start_ms = elapsed_ms
-                end_ms = start_ms + chunk_ms
+                buffer_len = len(buffer)
+                start_ms = segment_start_ms if segment_start_ms is not None else max(
+                    0.0, current_time_ms - buffer_len / bytes_per_ms
+                )
+                end_ms = start_ms + buffer_len / bytes_per_ms
                 await send_whisper_chunk(
-                    client, buffer, sample_rate, send, True, seq, aggregate, start_ms, end_ms, speaker
+                    client, buffer, sample_rate, send, True, seq, speaker_state, start_ms, end_ms, speaker
+                )
+
+            if speaker_state["segments"]:
+                final_end = speaker_state.get("last_end_text")
+                if final_end is None:
+                    final_end = current_time_ms
+                await flush_speaker_segments(
+                    speaker,
+                    speaker_state,
+                    send,
+                    f"{speaker} stream end",
+                    fallback_end=final_end,
                 )
         except Exception as exc:
             await send({"source": "whisper", "speaker": speaker, "type": "error", "error": str(exc)})
@@ -375,7 +490,7 @@ async def send_whisper_chunk(
     send,
     is_final,
     seq,
-    aggregate,
+    speaker_state,
     start_ms,
     end_ms,
     speaker,
@@ -393,28 +508,61 @@ async def send_whisper_chunk(
         data = await resp.json()
         text = (data.get("text") or "").strip()
         if text:
-            aggregate.append(text)
-            combined = " ".join(aggregate).strip()
-            await send({
-                "source": "whisper",
-                "speaker": speaker,
-                "type": "final" if is_final else "partial",
-                "text": combined,
-                "detail": f"chunk#{seq} {len(pcm_chunk)} bytes {dt} ms",
-                "startMs": int(start_ms),
-                "endMs": int(end_ms),
-            })
+            async def flush_final(detail: str, fallback_end: float | None = None):
+                await flush_speaker_segments(speaker, speaker_state, send, detail, fallback_end=fallback_end)
+
+            last_end = speaker_state.get("last_end_text")
+            gap = float("inf")
+            if last_end is not None:
+                gap = max(0.0, start_ms - last_end)
+
+            if speaker_state["segments"]:
+                if gap >= GAP_MS:
+                    await flush_final(f"chunk#{seq} gap {len(pcm_chunk)} bytes {dt} ms", fallback_end=last_end)
+                    speaker_state["segments"] = [text]
+                    speaker_state["current_start"] = start_ms
+                else:
+                    if speaker_state["segments"][-1] != text:
+                        speaker_state["segments"].append(text)
+            else:
+                speaker_state["segments"] = [text]
+                speaker_state["current_start"] = start_ms
+
+            speaker_state["last_end_text"] = end_ms
+
+            combined = " ".join(speaker_state["segments"]).strip()
+            if combined and combined != speaker_state.get("last_partial_chunk"):
+                speaker_state["last_partial_chunk"] = combined
+                await send({
+                    "source": "whisper",
+                    "speaker": speaker,
+                    "type": "partial",
+                    "text": combined,
+                    "detail": f"chunk#{seq} {len(pcm_chunk)} bytes {dt} ms",
+                    "startMs": int(speaker_state.get("current_start") or start_ms),
+                    "endMs": int(end_ms),
+                })
+
+            current_start = speaker_state.get("current_start")
+            if (
+                current_start is not None
+                and end_ms - current_start >= MERGE_MAX_MS
+                and not is_final
+            ):
+                await flush_final(f"chunk#{seq} max duration {len(pcm_chunk)} bytes {dt} ms")
             if is_final:
-                aggregate.clear()
+                await flush_final(f"chunk#{seq} end {len(pcm_chunk)} bytes {dt} ms")
         else:
-            await send({
-                "source": "whisper",
-                "speaker": speaker,
-                "type": "info",
-                "text": f"chunk#{seq} no speech ({dt} ms)",
-                "startMs": int(start_ms),
-                "endMs": int(end_ms),
-            })
+            if speaker_state["segments"] and speaker_state.get("last_end_text") is not None:
+                gap = max(0.0, start_ms - speaker_state["last_end_text"])
+                if gap >= GAP_MS:
+                    await flush_speaker_segments(
+                        speaker,
+                        speaker_state,
+                        send,
+                        f"chunk#{seq} silence {len(pcm_chunk)} bytes {dt} ms",
+                        fallback_end=speaker_state["last_end_text"],
+                    )
 
 
 async def lg_worker(speaker, pcm_bytes, sample_rate, send, stop_event: asyncio.Event, loop: asyncio.AbstractEventLoop):

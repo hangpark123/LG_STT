@@ -116,8 +116,16 @@
       padding: 10px 12px;
       background: rgba(15, 23, 42, 0.7);
     }
-    .entry.final { border-color: #34d399; }
-    .entry.partial { border-color: #fbbf24; }
+    .entry.speaker-tx {
+      border-color: #f97316;
+      background: rgba(249, 115, 22, 0.08);
+    }
+    .entry.speaker-rx {
+      border-color: #38bdf8;
+      background: rgba(14, 165, 233, 0.08);
+    }
+    .entry.final { box-shadow: 0 0 0 1px #34d399 inset; }
+    .entry.partial { box-shadow: 0 0 0 1px #fbbf24 inset; }
     .entry.error { border-color: #f87171; }
     .entry-meta {
       display: flex;
@@ -196,6 +204,7 @@
     let currentSample = null;
     let currentSr = srSel.value;
     const state = { rapeech: [], whisper: [] };
+    const partialStore = { rapeech: new Map(), whisper: new Map() };
 
     fetchSamples().catch(err => {
       console.error(err);
@@ -210,6 +219,8 @@
     btnClear.addEventListener('click', () => {
       state.rapeech = [];
       state.whisper = [];
+      partialStore.rapeech.clear();
+      partialStore.whisper.clear();
       renderTimeline('rapeech');
       renderTimeline('whisper');
     });
@@ -241,6 +252,8 @@
         logStatus('WebSocket 연결됨');
         state.rapeech = [];
         state.whisper = [];
+        partialStore.rapeech.clear();
+        partialStore.whisper.clear();
         renderTimeline('rapeech');
         renderTimeline('whisper');
         sendStart(currentSample, currentSr);
@@ -304,17 +317,36 @@
       }
       const source = msg.source === 'whisper' ? 'whisper' : 'rapeech';
       const speaker = msg.speaker || (source === 'whisper' ? 'mono' : 'mono');
-      const bucket = state[source];
       const text = extractText(msg);
-      if (!text && (msg.type === 'partial' || msg.type === 'final')) return;
-      bucket.push({
+      const entry = {
         type: msg.type || 'info',
         text: text || '',
+        detail: msg.detail || '',
         startMs: typeof msg.startMs === 'number' ? msg.startMs : null,
         endMs: typeof msg.endMs === 'number' ? msg.endMs : null,
         ts: new Date(),
         speaker
-      });
+      };
+
+      if (!entry.text && (entry.type === 'partial' || entry.type === 'final')) {
+        if (entry.type === 'final') dropPartialEntry(source, speaker);
+        return;
+      }
+
+      if (entry.type === 'partial') {
+        upsertPartialEntry(source, speaker, entry);
+        renderTimeline(source);
+        return;
+      }
+
+      if (entry.type === 'final') {
+        dropPartialEntry(source, speaker);
+        state[source].push(entry);
+        renderTimeline(source);
+        return;
+      }
+
+      state[source].push(entry);
       renderTimeline(source);
     }
 
@@ -329,7 +361,7 @@
     }
 
     function renderTimeline(source) {
-      const data = state[source];
+      const data = sortEntries(state[source]);
       const panel = source === 'rapeech' ? rapeechTimeline : whisperTimeline;
       panel.innerHTML = data.map(item => renderEntry(item)).join('');
       const finalCnt = data.filter(x => x.type === 'final').length;
@@ -348,8 +380,9 @@
       const cls = `entry ${item.type || 'info'}`;
       const meta = formatRange(item.startMs, item.endMs) || formatClock(item.ts);
       const speakerTag = item.speaker ? `[${item.speaker.toUpperCase()}] ` : '';
+      const speakerClass = item.speaker ? ` speaker-${item.speaker.toLowerCase()}` : '';
       return `
-        <div class="${cls}">
+        <div class="${cls}${speakerClass}">
           <div class="entry-meta">
             <span>${(item.type || 'info').toUpperCase()}</span>
             <span>${meta}</span>
@@ -357,6 +390,50 @@
           <div>${speakerTag}${escapeHtml(item.text)}</div>
         </div>
       `;
+    }
+
+    function upsertPartialEntry(source, speaker, payload) {
+      const key = `${source}:${speaker}`;
+      const store = partialStore[source];
+      const existing = store.get(key);
+      if (existing) {
+        existing.text = payload.text;
+        existing.startMs = payload.startMs;
+        existing.endMs = payload.endMs;
+        existing.ts = payload.ts;
+        existing.detail = payload.detail;
+        return;
+      }
+      state[source].push(payload);
+      store.set(key, payload);
+    }
+
+    function dropPartialEntry(source, speaker) {
+      const key = `${source}:${speaker}`;
+      const store = partialStore[source];
+      const existing = store.get(key);
+      if (!existing) return;
+      const bucket = state[source];
+      const idx = bucket.indexOf(existing);
+      if (idx >= 0) {
+        bucket.splice(idx, 1);
+      }
+      store.delete(key);
+    }
+
+    function sortEntries(list) {
+      return list.slice().sort((a, b) => {
+        const aStart = typeof a.startMs === 'number' ? a.startMs : null;
+        const bStart = typeof b.startMs === 'number' ? b.startMs : null;
+        if (aStart !== null && bStart !== null && aStart !== bStart) {
+          return aStart - bStart;
+        }
+        if (aStart !== null && bStart === null) return -1;
+        if (aStart === null && bStart !== null) return 1;
+        const aTime = a.ts instanceof Date ? a.ts.getTime() : 0;
+        const bTime = b.ts instanceof Date ? b.ts.getTime() : 0;
+        return aTime - bTime;
+      });
     }
 
     function formatRange(a, b) {
